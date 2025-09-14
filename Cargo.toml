@@ -1,0 +1,5 @@
+[workspace]
+members = ["src-tauri"]
+
+# This is a virtual workspace manifest for the project root.
+# All Rust crates live in member directories (e.g. src-tauri).
