@@ -185,7 +185,7 @@ async fn call_gemini_api(
 ) -> Result<(), String> {
     // Use proxy server instead of direct API calls
     let proxy_url = env::var("PROXY_URL")
-        .unwrap_or_else(|_| "https://proxy-server-4wjih0jwx-prem-thatikondas-projects.vercel.app".to_string());
+        .unwrap_or_else(|_| "https://proxy-server-p9wzc2v53-prem-thatikondas-projects.vercel.app".to_string());
     
     let url = format!("{}/api/gemini", proxy_url);
     
@@ -263,7 +263,7 @@ async fn call_perplexity_api(
 ) -> Result<(), String> {
     // Use proxy server instead of direct API calls
     let proxy_url = env::var("PROXY_URL")
-        .unwrap_or_else(|_| "https://proxy-server-4wjih0jwx-prem-thatikondas-projects.vercel.app".to_string());
+        .unwrap_or_else(|_| "https://proxy-server-p9wzc2v53-prem-thatikondas-projects.vercel.app".to_string());
     
     let url = format!("{}/api/perplexity", proxy_url);
     

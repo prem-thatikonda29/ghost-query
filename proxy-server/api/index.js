@@ -240,6 +240,11 @@ app.post(
         model: model,
         messages: [
           {
+            role: "system",
+            content:
+              'You are a helpful AI assistant. You MUST respond with ONLY a valid JSON object. NO other text before or after the JSON.\n\nRequired JSON format:\n{\n  "summary": "Brief direct answer to the question",\n  "details": "Detailed explanation with proper markdown formatting. Use **bold** for emphasis, ```code blocks``` for code, and bullet points for lists.",\n  "key_points": ["Point 1", "Point 2", "Point 3"],\n  "status": "success"\n}\n\nCRITICAL RULES:\n- Return ONLY the JSON object, nothing else\n- Ensure all strings are properly quoted with double quotes\n- Use double quotes for all JSON keys and string values\n- NEVER include citation numbers like [1], [2], [3] in any field\n- Ensure all brackets and braces are properly closed\n- Test that your JSON is valid before responding\n- Keep summary concise and direct\n- Include 3-5 key points in the key_points array\n- Format currency as $XXX.XX (e.g., $517.93)\n- Format percentages as XX% (e.g., 1.86%)\n- Use proper spacing around numbers and text\n- Ensure mathematical symbols and formulas are clearly formatted',
+          },
+          {
             role: "user",
             content: prompt,
           },

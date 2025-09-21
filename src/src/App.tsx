@@ -163,6 +163,119 @@ function App() {
     }
   };
 
+  // Function to normalize streaming text (remove invisible characters)
+  const normalizeStreamingText = (text: string): string => {
+    if (!text) return text;
+    return (
+      text
+        // convert zero-width joiners/spaces to a normal space
+        .replace(/[\u200b\u200c\u200d\u2060]/g, " ")
+        // normalize non-breaking/narrow spaces to a normal space
+        .replace(/[\u00a0\u202f]/g, " ")
+    );
+  };
+
+  // Function to clean up currency and percentage formatting
+  const cleanCurrencyAndPercent = (text: string): string => {
+    if (!text) return text;
+
+    // Fix common currency formatting issues
+    let cleaned = text
+      // Fix broken currency like "$517.93" -> "$517.93"
+      .replace(/\$(\d+\.?\d*)/g, "$$$1")
+      // Fix percentage formatting
+      .replace(/(\d+(?:\.\d+)?)\s*%/g, "$1%")
+      // Fix broken numbers with missing spaces
+      .replace(/(\d+)([A-Za-z])/g, "$1 $2")
+      // Fix broken decimal points
+      .replace(/(\d+)\.(\d+)/g, "$1.$2")
+      // Normalize multiple spaces
+      .replace(/\s+/g, " ")
+      // Fix broken sentences
+      .replace(/([.!?])([A-Z])/g, "$1 $2");
+
+    return cleaned;
+  };
+
+  // Function to parse and format JSON responses
+  const formatResponse = (response: string) => {
+    try {
+      // Clean the response first - remove any extra text before/after JSON
+      let cleanResponse = response.trim();
+
+      // Try to find JSON object boundaries
+      const jsonStart = cleanResponse.indexOf("{");
+      const jsonEnd = cleanResponse.lastIndexOf("}");
+
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        cleanResponse = cleanResponse.substring(jsonStart, jsonEnd + 1);
+      }
+
+      // Try to parse as JSON
+      const parsed = JSON.parse(cleanResponse);
+
+      // Check if it's a structured response with our expected format
+      if (
+        parsed.summary &&
+        parsed.details &&
+        parsed.key_points &&
+        parsed.status
+      ) {
+        // Clean up the content before formatting
+        const cleanSummary = cleanCurrencyAndPercent(
+          normalizeStreamingText(parsed.summary)
+        );
+        const cleanDetails = cleanCurrencyAndPercent(
+          normalizeStreamingText(parsed.details)
+        );
+        const cleanKeyPoints = parsed.key_points.map((point: string) =>
+          cleanCurrencyAndPercent(normalizeStreamingText(point))
+        );
+
+        return `## ${cleanSummary}\n\n${cleanDetails}\n\n### Key Points\n\n${cleanKeyPoints
+          .map((point: string) => `- ${point}`)
+          .join("\n")}`;
+      }
+    } catch (e) {
+      // If JSON parsing fails, try to extract key information manually
+      console.log("JSON parsing failed, attempting manual extraction");
+
+      // Look for common patterns in the malformed response
+      const summaryMatch = response.match(/"summary":\s*"([^"]+)"/);
+      const detailsMatch = response.match(/"details":\s*"([^"]+)"/);
+      const keyPointsMatch = response.match(/"key_points":\s*\[(.*?)\]/);
+
+      if (summaryMatch && detailsMatch) {
+        let formatted = `## ${cleanCurrencyAndPercent(
+          normalizeStreamingText(summaryMatch[1])
+        )}\n\n${cleanCurrencyAndPercent(
+          normalizeStreamingText(detailsMatch[1])
+        )}`;
+
+        if (keyPointsMatch) {
+          const points = keyPointsMatch[1]
+            .split(",")
+            .map((point) => point.trim().replace(/"/g, ""))
+            .filter((point) => point.length > 0)
+            .map((point) =>
+              cleanCurrencyAndPercent(normalizeStreamingText(point))
+            );
+
+          if (points.length > 0) {
+            formatted += `\n\n### Key Points\n\n${points
+              .map((point) => `- ${point}`)
+              .join("\n")}`;
+          }
+        }
+
+        return formatted;
+      }
+    }
+
+    // If all else fails, apply basic cleaning to the raw response
+    return cleanCurrencyAndPercent(normalizeStreamingText(response));
+  };
+
   // Custom components for ReactMarkdown
   const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
     const match = /language-(\w+)/.exec(className || "");
@@ -264,7 +377,9 @@ function App() {
                       size="sm"
                       variant="ghost"
                       className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                      onClick={() => copyToClipboard(msg.content, "full")}
+                      onClick={() =>
+                        copyToClipboard(formatResponse(msg.content), "full")
+                      }
                     >
                       <Copy className="h-3 w-3" />
                     </Button>
@@ -292,7 +407,7 @@ function App() {
                   code: CodeBlock,
                 }}
               >
-                {response}
+                {formatResponse(response)}
               </ReactMarkdown>
               {isLoading && !response && (
                 <span className="text-muted-foreground">Thinking...</span>
@@ -303,7 +418,9 @@ function App() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => copyToClipboard(response, "full")}
+                    onClick={() =>
+                      copyToClipboard(formatResponse(response), "full")
+                    }
                   >
                     {fullResponseCopied ? (
                       <Check className="h-4 w-4" />
