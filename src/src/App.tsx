@@ -7,7 +7,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
-import { Trash2, MessageSquare } from "lucide-react";
+import { ModelSelector } from "./components/ui/model-selector";
+import { Trash2, MessageSquare, Copy, Check } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 interface ConversationMessage {
   id: string;
@@ -25,6 +27,11 @@ function App() {
     ConversationMessage[]
   >([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("gemini-1.5-flash");
+  const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>(
+    {}
+  );
+  const [fullResponseCopied, setFullResponseCopied] = useState(false);
   const responseRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -34,7 +41,7 @@ function App() {
       setResponse((prev) => prev + event.payload);
     });
 
-    const unlistenDone = listen<string>("ai-response-done", (event) => {
+    const unlistenDone = listen<string>("ai-response-done", (_event) => {
       setIsLoading(false);
       setMessage("");
       // Refresh conversation history after response is complete
@@ -112,7 +119,10 @@ function App() {
       setResponse("");
 
       try {
-        await invoke("ask_ai_stream", { prompt: message });
+        await invoke("ask_ai_stream", {
+          prompt: message,
+          model: selectedModel,
+        });
       } catch (err) {
         setError(err as string);
         setIsLoading(false);
@@ -131,6 +141,71 @@ function App() {
     }
   };
 
+  const copyToClipboard = async (
+    text: string,
+    type: "code" | "full",
+    codeId?: string
+  ) => {
+    try {
+      await navigator.clipboard.writeText(text);
+
+      if (type === "code" && codeId) {
+        setCopiedStates((prev) => ({ ...prev, [codeId]: true }));
+        setTimeout(() => {
+          setCopiedStates((prev) => ({ ...prev, [codeId]: false }));
+        }, 2000);
+      } else if (type === "full") {
+        setFullResponseCopied(true);
+        setTimeout(() => setFullResponseCopied(false), 2000);
+      }
+    } catch (err) {
+      console.error("Failed to copy text:", err);
+    }
+  };
+
+  // Custom components for ReactMarkdown
+  const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
+    const match = /language-(\w+)/.exec(className || "");
+    const language = match ? match[1] : "";
+    const codeText = String(children).replace(/\n$/, "");
+    // Use a hash of the content as a stable ID
+    const codeId = `code-${codeText.slice(0, 20).replace(/\s/g, "")}`;
+    const isCopied = copiedStates[codeId];
+
+    if (!inline && match) {
+      return (
+        <div className="relative group">
+          <pre className="bg-black text-gray-100 p-4 rounded-lg overflow-x-auto text-base">
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </pre>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+            onClick={() => copyToClipboard(codeText, "code", codeId)}
+          >
+            {isCopied ? (
+              <Check className="h-4 w-4" />
+            ) : (
+              <Copy className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <code
+        className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-sm"
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  };
+
   return (
     <div className="w-full flex flex-col h-screen p-4">
       <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
@@ -145,6 +220,11 @@ function App() {
             )}
           </div>
           <div className="flex gap-2">
+            <ModelSelector
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              className="w-48"
+            />
             {conversationHistory.length > 0 && (
               <Button
                 variant="outline"
@@ -172,14 +252,22 @@ function App() {
               {conversationHistory.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`text-xs p-2 rounded ${
+                  className={`text-xs p-2 rounded relative group ${
                     msg.role === "user"
                       ? "bg-blue-100 dark:bg-blue-900/20 ml-4"
                       : "bg-green-100 dark:bg-green-900/20 mr-4"
                   }`}
                 >
-                  <div className="font-medium text-xs mb-1">
-                    {msg.role === "user" ? "You" : "AI"}
+                  <div className="font-medium text-xs mb-1 flex justify-between items-center">
+                    <span>{msg.role === "user" ? "You" : "AI"}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
+                      onClick={() => copyToClipboard(msg.content, "full")}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
                   </div>
                   <div className="whitespace-pre-wrap">
                     {msg.content.length > 200
@@ -196,12 +284,34 @@ function App() {
         {(response || isLoading) && (
           <div
             ref={responseRef}
-            className="flex-1 mb-4 p-4 rounded-lg bg-muted/50 border overflow-y-auto max-h-[60vh]"
+            className="flex-1 mb-4 p-4 rounded-lg bg-muted/50 border overflow-y-auto max-h-[60vh] relative"
           >
-            <div className="whitespace-pre-wrap text-sm leading-relaxed">
-              {response}
+            <div className="text-sm leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+              <ReactMarkdown
+                components={{
+                  code: CodeBlock,
+                }}
+              >
+                {response}
+              </ReactMarkdown>
               {isLoading && !response && (
                 <span className="text-muted-foreground">Thinking...</span>
+              )}
+              {/* Copy Full Response Button - positioned at end of content */}
+              {response && (
+                <div className="mt-8 flex justify-start">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => copyToClipboard(response, "full")}
+                  >
+                    {fullResponseCopied ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
               )}
             </div>
           </div>

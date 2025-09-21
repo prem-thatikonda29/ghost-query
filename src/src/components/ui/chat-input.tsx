@@ -4,7 +4,7 @@ import { Button } from "./button";
 import { Textarea } from "./textarea";
 import { cn } from "../../lib/utils";
 import { useTextareaResize } from "../../hooks/use-textarea-resize";
-import { ArrowUpIcon } from "lucide-react";
+import { ChevronRight, Square } from "lucide-react";
 import type React from "react";
 import { createContext, useContext, forwardRef } from "react";
 
@@ -53,7 +53,7 @@ function ChatInput({
       <div
         className={cn(
           variant === "default" &&
-            "flex flex-col items-end w-full p-2 rounded-2xl border border-input bg-transparent focus-within:ring-1 focus-within:ring-ring focus-within:outline-none",
+            "flex flex-col items-end w-full p-2 pb-4 pr-4 rounded-4xl border border-input bg-transparent focus-within:ring-1 focus-within:ring-ring focus-within:outline-none",
           variant === "unstyled" && "flex items-start gap-2 w-full",
           className
         )}
@@ -166,26 +166,12 @@ function ChatInputSubmit({
       <Button
         onClick={onStop}
         className={cn(
-          "shrink-0 rounded-full p-1.5 h-fit border dark:border-zinc-600",
+          "shrink-0 rounded-2xl p-1.5 h-fit border dark:border-zinc-600",
           className
         )}
         {...props}
       >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-label="Stop"
-        >
-          <title>Stop</title>
-          <rect x="6" y="6" width="12" height="12" />
-        </svg>
+        <Square />
       </Button>
     );
   }
@@ -196,7 +182,7 @@ function ChatInputSubmit({
   return (
     <Button
       className={cn(
-        "shrink-0 rounded-full p-1.5 h-fit border dark:border-zinc-600",
+        "shrink-0 rounded-2xl p-1.5 h-fit border dark:border-zinc-600",
         className
       )}
       disabled={isDisabled}
@@ -208,7 +194,7 @@ function ChatInputSubmit({
       }}
       {...props}
     >
-      <ArrowUpIcon />
+      <ChevronRight />
     </Button>
   );
 }

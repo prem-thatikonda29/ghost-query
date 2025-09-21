@@ -4,11 +4,14 @@
 use tauri::{Manager, Emitter};
 use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{HotKey, Modifiers, Code}};
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
+// use futures_util::StreamExt; // Not needed for non-streaming
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
+use reqwest::Client;
+use std::env;
+use dotenv::dotenv;
 
 // --- The following is for Windows-specific stealthing ---
 #[cfg(target_os = "windows")]
@@ -16,23 +19,62 @@ use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrA, GWL_EXSTYLE, WS
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::HWND;
 
+// API Provider structures
 #[derive(Debug, Serialize, Deserialize)]
-struct OllamaRequest {
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+    generation_config: GeminiGenerationConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiGenerationConfig {
+    temperature: f32,
+    max_output_tokens: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiResponse {
+    candidates: Vec<GeminiCandidate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiCandidate {
+    content: GeminiContent,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PerplexityRequest {
     model: String,
-    prompt: String,
+    messages: Vec<PerplexityMessage>,
     stream: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OllamaResponse {
-    response: String,
-    done: bool,
+struct PerplexityMessage {
+    role: String,
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct StreamChunk {
-    response: String,
-    done: bool,
+struct PerplexityResponse {
+    choices: Vec<PerplexityChoice>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PerplexityChoice {
+    message: PerplexityMessage,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -103,7 +145,7 @@ lazy_static::lazy_static! {
 }
 
 #[tauri::command]
-async fn ask_ai_stream(prompt: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+async fn ask_ai_stream(prompt: String, model: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     // Reset cancellation flag
     STREAM_CANCELLED.store(false, Ordering::Relaxed);
     
@@ -121,70 +163,168 @@ async fn ask_ai_stream(prompt: String, app_handle: tauri::AppHandle) -> Result<(
         }
     };
     
-    let client = reqwest::Client::new();
-    let request_body = OllamaRequest {
-        model: "llama3.2".to_string(), // Default model, can be made configurable
-        prompt: contextual_prompt,
-        stream: true,
-    };
+    let client = Client::new();
+    
+    // Determine which API provider to use based on model
+    if model.starts_with("gemini") {
+        call_gemini_api(&client, &model, &contextual_prompt, &app_handle).await
+    } else if model == "sonar" {
+        call_perplexity_api(&client, &model, &contextual_prompt, &app_handle).await
+    } else {
+        let error_msg = format!("Unsupported model: {}", model);
+        let _ = app_handle.emit("ai-response-error", &error_msg);
+        Err(error_msg)
+    }
+}
 
-    match client
-        .post("http://localhost:11434/api/generate")
-        .json(&request_body)
-        .send()
-        .await
-    {
+async fn call_gemini_api(
+    client: &Client,
+    model: &str,
+    prompt: &str,
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    // Use proxy server instead of direct API calls
+    let proxy_url = env::var("PROXY_URL")
+        .unwrap_or_else(|_| "https://proxy-server-4wjih0jwx-prem-thatikondas-projects.vercel.app".to_string());
+    
+    let url = format!("{}/api/gemini", proxy_url);
+    
+    let request_body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "temperature": 0.7,
+        "maxTokens": 2048,
+        "stream": true
+    });
+
+    match client.post(&url).json(&request_body).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 let mut stream = response.bytes_stream();
-                let mut full_response = String::new();
+                let mut full_content = String::new();
+                
+                use futures_util::StreamExt;
                 
                 while let Some(chunk) = stream.next().await {
-                    // Check if streaming was cancelled
-                    if STREAM_CANCELLED.load(Ordering::Relaxed) {
-                        let _ = app_handle.emit("ai-response-cancelled", "Stream cancelled by user");
-                        return Ok(());
-                    }
+                    let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+                    let chunk_str = String::from_utf8_lossy(&chunk);
                     
-                    match chunk {
-                        Ok(bytes) => {
-                            let text = String::from_utf8_lossy(&bytes);
-                            let lines: Vec<&str> = text.lines().collect();
+                    // Process each line in the chunk
+                    for line in chunk_str.lines() {
+                        if line.starts_with("data: ") {
+                            let data = &line[6..];
+                            if data == "[DONE]" {
+                                // Stream finished
+                                let mut conversation = CONVERSATION.lock().unwrap();
+                                conversation.add_message("assistant".to_string(), full_content.clone());
+                                let _ = app_handle.emit("ai-response-done", &full_content);
+                                return Ok(());
+                            }
                             
-                            for line in lines {
-                                if !line.trim().is_empty() {
-                                    if let Ok(chunk_data) = serde_json::from_str::<StreamChunk>(line) {
-                                        full_response.push_str(&chunk_data.response);
-                                        
-                                        // Emit the current response chunk to the frontend
-                                        let _ = app_handle.emit("ai-response-chunk", &chunk_data.response);
-                                        
-                                        if chunk_data.done {
-                                            // Add assistant response to conversation
-                                            let mut conversation = CONVERSATION.lock().unwrap();
-                                            conversation.add_message("assistant".to_string(), full_response.clone());
-                                            
-                                            let _ = app_handle.emit("ai-response-done", &full_response);
-                                            return Ok(());
-                                        }
-                                    }
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(content) = parsed["content"].as_str() {
+                                    full_content.push_str(content);
+                                    let _ = app_handle.emit("ai-response-chunk", content);
+                                } else if let Some(error_msg) = parsed["error"].as_str() {
+                                    let _ = app_handle.emit("ai-response-error", error_msg);
+                                    return Err(format!("Proxy server error: {}", error_msg));
                                 }
                             }
                         }
-                        Err(e) => {
-                            let _ = app_handle.emit("ai-response-error", &format!("Stream error: {}", e));
-                            return Err(format!("Stream error: {}", e));
-                        }
                     }
                 }
+                
+                // If we get here, stream ended without [DONE]
+                let mut conversation = CONVERSATION.lock().unwrap();
+                conversation.add_message("assistant".to_string(), full_content.clone());
+                let _ = app_handle.emit("ai-response-done", &full_content);
                 Ok(())
             } else {
-                let _ = app_handle.emit("ai-response-error", &format!("Ollama API returned error: {}", response.status()));
-                Err(format!("Ollama API returned error: {}", response.status()))
+                let status = response.status();
+                let response_text = response.text().await.unwrap_or_else(|_| "Failed to read error response".to_string());
+                let error_msg = format!("Proxy server returned error: {} - {}", status, response_text);
+                let _ = app_handle.emit("ai-response-error", &error_msg);
+                Err(error_msg)
             }
         }
         Err(e) => {
-            let error_msg = format!("Failed to connect to Ollama: {}. Make sure Ollama is running on localhost:11434", e);
+            let error_msg = format!("Failed to connect to proxy server: {}", e);
+            let _ = app_handle.emit("ai-response-error", &error_msg);
+            Err(error_msg)
+        }
+    }
+}
+
+async fn call_perplexity_api(
+    client: &Client,
+    model: &str,
+    prompt: &str,
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    // Use proxy server instead of direct API calls
+    let proxy_url = env::var("PROXY_URL")
+        .unwrap_or_else(|_| "https://proxy-server-4wjih0jwx-prem-thatikondas-projects.vercel.app".to_string());
+    
+    let url = format!("{}/api/perplexity", proxy_url);
+    
+    let request_body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": true
+    });
+
+    match client.post(&url).json(&request_body).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                let mut stream = response.bytes_stream();
+                let mut full_content = String::new();
+                
+                use futures_util::StreamExt;
+                
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+                    let chunk_str = String::from_utf8_lossy(&chunk);
+                    
+                    // Process each line in the chunk
+                    for line in chunk_str.lines() {
+                        if line.starts_with("data: ") {
+                            let data = &line[6..];
+                            if data == "[DONE]" {
+                                // Stream finished
+                                let mut conversation = CONVERSATION.lock().unwrap();
+                                conversation.add_message("assistant".to_string(), full_content.clone());
+                                let _ = app_handle.emit("ai-response-done", &full_content);
+                                return Ok(());
+                            }
+                            
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(content) = parsed["content"].as_str() {
+                                    full_content.push_str(content);
+                                    let _ = app_handle.emit("ai-response-chunk", content);
+                                } else if let Some(error_msg) = parsed["error"].as_str() {
+                                    let _ = app_handle.emit("ai-response-error", error_msg);
+                                    return Err(format!("Proxy server error: {}", error_msg));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If we get here, stream ended without [DONE]
+                let mut conversation = CONVERSATION.lock().unwrap();
+                conversation.add_message("assistant".to_string(), full_content.clone());
+                let _ = app_handle.emit("ai-response-done", &full_content);
+                Ok(())
+            } else {
+                let status = response.status();
+                let response_text = response.text().await.unwrap_or_else(|_| "Failed to read error response".to_string());
+                let error_msg = format!("Proxy server returned error: {} - {}", status, response_text);
+                let _ = app_handle.emit("ai-response-error", &error_msg);
+                Err(error_msg)
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to connect to proxy server: {}", e);
             let _ = app_handle.emit("ai-response-error", &error_msg);
             Err(error_msg)
         }
@@ -211,6 +351,9 @@ fn stop_streaming() -> Result<(), String> {
 }
 
 fn main() {
+    // Load environment variables from .env file
+    dotenv().ok();
+    
     // We need to create the hotkey manager before the app starts
     let manager = GlobalHotKeyManager::new().unwrap();
     
