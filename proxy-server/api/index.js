@@ -188,7 +188,7 @@ app.post("/api/gemini", generalRateLimit, geminiRateLimit, async (req, res) => {
   } catch (error) {
     console.error("Gemini API Error:", error.response?.data || error.message);
 
-    if (stream) {
+    if (req.body.stream) {
       res.write(
         `data: ${JSON.stringify({ error: "Gemini API request failed" })}\n\n`
       );
@@ -378,10 +378,10 @@ app.get("/api/models", (req, res) => {
   res.json({
     gemini: [
       {
-        id: "gemini-1.5-flash",
-        name: "Gemini 1.5 Flash",
+        id: "gemini-2.0-flash-exp",
+        name: "Gemini 2.0 Flash",
         provider: "Google",
-        description: "Fast and efficient for quick responses",
+        description: "Latest Gemini 2.0 Flash model",
       },
       {
         id: "gemini-1.5-pro",

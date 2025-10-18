@@ -20,7 +20,7 @@ interface ModelSelectorProps {
 
 const MODELS: ModelOption[] = [
   {
-    id: "gemini-2.0-flash",
+    id: "gemini-2.0-flash-exp",
     name: "Gemini 2.0 Flash",
     provider: "Google",
     description: "Advanced Gemini model for fast responses",

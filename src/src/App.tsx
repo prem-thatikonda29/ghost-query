@@ -27,7 +27,7 @@ function App() {
     ConversationMessage[]
   >([]);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("gemini-1.5-flash");
+  const [selectedModel, setSelectedModel] = useState("gemini-2.0-flash-exp");
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>(
     {}
   );
