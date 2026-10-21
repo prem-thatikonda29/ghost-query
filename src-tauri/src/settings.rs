@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-/// OpenRouter's router across its free models (listed in its public /models catalog).
-pub const DEFAULT_MODEL: &str = "openrouter/free";
+/// A specific free chat model. Not `openrouter/free`: that router picks a free model at
+/// random, including non-chat ones such as NVIDIA's content-safety classifier.
+pub const DEFAULT_MODEL: &str = "google/gemma-4-31b-it:free";
 
 /// Non-secret provider settings. The API key lives in the OS keychain, never here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

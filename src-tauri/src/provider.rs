@@ -102,6 +102,12 @@ pub fn error_for_status(status: u16, body: &str) -> String {
     }
 }
 
+/// Classifier/guardrail models answer with labels like "User Safety: safe", not chat.
+fn is_chat_model(id: &str) -> bool {
+    let id = id.to_lowercase();
+    !(id.contains("safety") || id.contains("guard") || id.contains("moderation"))
+}
+
 pub fn parse_models(catalog: &Value) -> Vec<ModelInfo> {
     let mut models: Vec<ModelInfo> = catalog["data"]
         .as_array()
@@ -110,6 +116,9 @@ pub fn parse_models(catalog: &Value) -> Vec<ModelInfo> {
                 .iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
+                    if !is_chat_model(&id) {
+                        return None;
+                    }
                     Some(ModelInfo {
                         name: m["name"].as_str().unwrap_or(&id).to_string(),
                         context_length: m["context_length"].as_u64(),
@@ -270,9 +279,11 @@ mod tests {
         let catalog = serde_json::json!({"data":[
             {"id":"z/paid","name":"Paid","context_length":8000},
             {"id":"a/model:free","name":"Free One","context_length":32000},
-            {"id":"openrouter/free"}
+            {"id":"openrouter/free"},
+            {"id":"nvidia/nemotron-3.5-content-safety:free","name":"Content Safety"}
         ]});
         let ids: Vec<_> = parse_models(&catalog).into_iter().map(|m| m.id).collect();
+        // Classifier models are hidden; free models come first.
         assert_eq!(ids, vec!["a/model:free", "openrouter/free", "z/paid"]);
     }
 

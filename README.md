@@ -51,7 +51,7 @@ npm --prefix src install
 npm --prefix src run tauri dev
 ```
 
-On first launch the Settings panel opens: paste your API key, pick a model (the default is `openrouter/free`), and save.
+On first launch the Settings panel opens: paste your API key, pick a model (the default is `google/gemma-4-31b-it:free`), and save.
 
 ## Tests
 
