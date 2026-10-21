@@ -58,7 +58,7 @@ function App() {
       "ai-response-cancelled",
       (event) => {
         setIsLoading(false);
-        console.log("Stream cancelled:", event.payload);
+        loadConversationHistory();
       }
     );
 
