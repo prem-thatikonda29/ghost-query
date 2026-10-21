@@ -18,19 +18,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.4.1", features = [] }
 
 [dependencies]
-serde_json = "1.0"
+ghost-core = { path = "../ghost-core" }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.8.5", features = [] }
 tauri-plugin-log = "2.0"
 tauri-plugin-global-shortcut = "2"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-futures-util = "0.3"
-tokio = { version = "1.0", features = ["full"] }
+reqwest = "0.12"
 tokio-util = "0.7"
-keyring = "4"
-rusqlite = { version = "0.40", features = ["bundled"] }
-uuid = { version = "1.0", features = ["v4"] }
-
-[dev-dependencies]
-tauri = { version = "2.8.5", features = ["test"] }

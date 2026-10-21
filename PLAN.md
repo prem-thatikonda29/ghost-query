@@ -52,7 +52,7 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [x] `release.yml`: on `v*` tags, builds universal macOS dmg + Windows msi/exe and creates a draft release; tag must match the app version
 - [x] `beforeBuildCommand` added so `tauri build` builds the frontend
 - [x] Fixed npm/crate Tauri version mismatch (`@tauri-apps/api` and `cli` 2.8 -> 2.12) that made `tauri build` fail
-- [ ] Workflows cannot run until pushed to GitHub: first run on Windows is the first real Windows compile check
+- [x] First CI run: macOS passed; Windows test program failed to start (STATUS_ENTRYPOINT_NOT_FOUND, tauri test binaries lack the Common Controls manifest). Fixed by moving all logic and tests into `ghost-core` (no Tauri dependency); CI tests it and only compiles the app crate
 - [ ] Code signing / notarization (needs Apple Developer and Windows certs; unsigned for now)
 
 ## Phase 5+: Later

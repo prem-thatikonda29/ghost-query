@@ -1,18 +1,13 @@
-mod conversation;
-mod db;
-mod keystore;
-mod provider;
-mod providers;
-mod settings;
-mod sse;
 mod window;
 
-use conversation::{build_request_messages, HISTORY_TOKEN_BUDGET};
-use db::{ConversationSummary, Db, StoredMessage};
-use provider::{ModelInfo, Outcome};
+use ghost_core::conversation::{build_request_messages, HISTORY_TOKEN_BUDGET};
+use ghost_core::db::{ConversationSummary, Db, StoredMessage};
+use ghost_core::debounce::Debounce;
+use ghost_core::provider::{ModelInfo, Outcome};
+use ghost_core::settings::Settings;
+use ghost_core::{keystore, provider, providers};
 use reqwest::Client;
 use serde::Serialize;
-use settings::Settings;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -207,7 +202,17 @@ async fn ask_ai_stream(
         previous.cancel();
     }
 
-    let outcome = provider::stream_chat(&Client::new(), &active, key.as_deref(), &messages, &token, &app).await;
+    let outcome = provider::stream_chat(
+        &Client::new(),
+        &active,
+        key.as_deref(),
+        &messages,
+        &token,
+        &|text| {
+            let _ = app.emit("ai-response-chunk", text);
+        },
+    )
+    .await;
 
     {
         let mut slot = state.active.lock().unwrap();
@@ -289,7 +294,7 @@ fn stop_streaming(state: State<'_, ChatState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let debounce = std::sync::Arc::new(Mutex::new(window::Debounce::new()));
+    let debounce = std::sync::Arc::new(Mutex::new(Debounce::new()));
 
     tauri::Builder::default()
         .plugin(

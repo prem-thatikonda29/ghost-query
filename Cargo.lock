@@ -99,20 +99,15 @@ checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
 name = "app"
 version = "0.2.0"
 dependencies = [
- "futures-util",
- "keyring",
+ "ghost-core",
  "log",
  "reqwest 0.12.23",
- "rusqlite",
  "serde",
- "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-log",
- "tokio",
  "tokio-util",
- "uuid",
 ]
 
 [[package]]
@@ -1595,6 +1590,21 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+]
+
+[[package]]
+name = "ghost-core"
+version = "0.2.1"
+dependencies = [
+ "futures-util",
+ "keyring",
+ "reqwest 0.12.23",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -4769,9 +4779,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "slab",
  "socket2",
  "tokio-macros",

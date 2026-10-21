@@ -43,5 +43,11 @@ jobs:
       - name: Build frontend
         run: npm --prefix src run build
 
+      # Logic lives in ghost-core, which has no Tauri dependency. The app crate's own test
+      # program cannot start on Windows (it needs the Common Controls manifest that only the
+      # real app build embeds), so it is compiled here but never run.
       - name: Rust tests
-        run: cargo test -p app --locked
+        run: cargo test -p ghost-core --locked
+
+      - name: Compile the app crate
+        run: cargo check -p app --locked

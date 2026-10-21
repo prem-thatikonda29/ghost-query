@@ -8,7 +8,6 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Runtime};
 use tokio_util::sync::CancellationToken;
 
 pub enum Outcome {
@@ -152,13 +151,14 @@ pub async fn fetch_models(client: &Client, base_url: &str, api_key: Option<&str>
     Ok(parse_models(&catalog))
 }
 
-pub async fn stream_chat<R: Runtime>(
+/// Streams a chat completion. `on_chunk` is called with each text delta as it arrives.
+pub async fn stream_chat(
     client: &Client,
     active: &Active,
     api_key: Option<&str>,
     messages: &[ChatMessage],
     token: &CancellationToken,
-    app: &AppHandle<R>,
+    on_chunk: &(dyn Fn(&str) + Sync),
 ) -> Outcome {
     let mut full = String::new();
 
@@ -209,7 +209,7 @@ pub async fn stream_chat<R: Runtime>(
             match parse_event(&data) {
                 Event::Delta(text) => {
                     full.push_str(&text);
-                    let _ = app.emit("ai-response-chunk", text);
+                    on_chunk(&text);
                 }
                 Event::Done => return Outcome::Done(full),
                 Event::Error(message) => return Outcome::Failed(message),
@@ -327,19 +327,20 @@ mod tests {
     async fn streams_to_completion_and_sends_auth_to_the_right_path() {
         let events = ": OPENROUTER PROCESSING\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\ndata: [DONE]\n\n";
         let (base, request_rx) = fake_server(events, false).await;
-        let app = tauri::test::mock_app();
 
+        let chunks = std::sync::Mutex::new(Vec::<String>::new());
         let outcome = stream_chat(
             &Client::new(),
             &settings(base),
             Some("test-key"),
             &[msg("user", "hi")],
             &CancellationToken::new(),
-            app.handle(),
+            &|text| chunks.lock().unwrap().push(text.to_string()),
         )
         .await;
 
         assert!(matches!(outcome, Outcome::Done(ref t) if t == "Hello"));
+        assert_eq!(*chunks.lock().unwrap(), vec!["Hel", "lo"]);
         let request = request_rx.await.unwrap().to_lowercase();
         assert!(request.starts_with("post /v1/chat/completions"), "{request}");
         assert!(request.contains("authorization: bearer test-key"));
@@ -350,9 +351,8 @@ mod tests {
     async fn mid_stream_error_fails_the_request() {
         let events = "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\ndata: {\"error\":{\"code\":502,\"message\":\"Provider disconnected\"},\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"error\"}]}\n\n";
         let (base, _rx) = fake_server(events, false).await;
-        let app = tauri::test::mock_app();
 
-        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), app.handle()).await;
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), &|_| {}).await;
 
         assert!(matches!(outcome, Outcome::Failed(ref e) if e.contains("Provider disconnected")));
     }
@@ -361,7 +361,6 @@ mod tests {
     async fn stop_aborts_a_stalled_stream_and_keeps_partial_output() {
         let events = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
         let (base, _rx) = fake_server(events, true).await;
-        let app = tauri::test::mock_app();
         let token = CancellationToken::new();
 
         let canceller = token.clone();
@@ -371,7 +370,7 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &token, app.handle()).await;
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &token, &|_| {}).await;
 
         assert!(started.elapsed().as_secs() < 5, "Stop did not abort the stream");
         assert!(matches!(outcome, Outcome::Cancelled(ref t) if t == "partial"));
@@ -379,14 +378,13 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_server_fails_instead_of_hanging() {
-        let app = tauri::test::mock_app();
         let outcome = stream_chat(
             &Client::new(),
             &settings("http://127.0.0.1:9/v1".into()),
             None,
             &[msg("user", "hi")],
             &CancellationToken::new(),
-            app.handle(),
+            &|_| {},
         )
         .await;
         assert!(matches!(outcome, Outcome::Failed(_)));

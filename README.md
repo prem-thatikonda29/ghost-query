@@ -25,16 +25,19 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 │       ├── App.tsx       # Main chat UI
 │       ├── components/   # UI primitives (chat input, settings page, etc.)
 │       └── lib/          # Utilities
-├── src-tauri/            # Tauri/Rust backend
+├── src-tauri/            # Tauri app shell
 │   └── src/
 │       ├── lib.rs        # App setup, commands, global shortcut
-│       ├── window.rs     # Show/hide logic and debounce
+│       └── window.rs     # Show/hide the window
+├── ghost-core/           # Logic with no Tauri dependency (all unit tests live here)
+│   └── src/
 │       ├── provider.rs   # OpenAI-compatible streaming client
 │       ├── providers.rs  # Built-in provider presets
 │       ├── keystore.rs   # Per-provider API keys in the OS keychain
 │       ├── settings.rs   # Active provider, models, custom URL (non-secret)
 │       ├── conversation.rs  # Request building, token-budget trimming
 │       ├── db.rs         # SQLite conversations and messages
+│       ├── debounce.rs   # Hotkey debounce
 │       └── sse.rs        # Server-sent-events parser
 ├── PLAN.md               # Phase checklist
 └── Cargo.toml            # Rust workspace
@@ -59,10 +62,10 @@ On first launch the Settings page opens: pick a provider, paste its API key, cho
 ## Tests
 
 ```sh
-cargo test -p app
+cargo test -p ghost-core
 ```
 
-CI (`.github/workflows/ci.yml`) runs the frontend build and these tests on macOS and Windows for every push to `main`/`v2-dev` and every pull request.
+CI (`.github/workflows/ci.yml`) runs the frontend build, these tests and a compile check of the app on macOS and Windows for every push to `main`/`v2-dev` and every pull request.
 
 ## Releases
 
