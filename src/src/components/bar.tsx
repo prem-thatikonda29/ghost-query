@@ -1,6 +1,8 @@
 import { forwardRef } from "react";
 import { ArrowUp, Ghost, Maximize2, Square } from "lucide-react";
-import { Button } from "./ui/button";
+import { IconButton } from "./ui/icon-button";
+import { ModelChip } from "./model-picker";
+import type { SettingsView } from "./ui/settings-page";
 import { MOD } from "../lib/utils";
 
 interface BarProps {
@@ -8,24 +10,27 @@ interface BarProps {
   onChange: (value: string) => void;
   onSubmit: () => void;
   onExpand: () => void;
+  onModel: () => void;
   loading: boolean;
   onStop: () => void;
+  placeholder: string;
+  settings: SettingsView | null;
 }
 
-/// The Spotlight-like state of the window: one line to ask from, nothing else. The
-/// empty parts of the bar drag the window.
+/// The Spotlight-like state of the window: one line to ask from. The empty parts of
+/// the bar drag the window. Tooltips open sideways, as the bar has no room below.
 export const Bar = forwardRef<HTMLInputElement, BarProps>(function Bar(
-  { value, onChange, onSubmit, onExpand, loading, onStop },
+  { value, onChange, onSubmit, onExpand, onModel, loading, onStop, placeholder, settings },
   ref
 ) {
   const empty = value.trim().length === 0;
   return (
-    <div data-tauri-drag-region className="flex h-full items-center gap-2.5 pl-[18px] pr-2.5">
+    <div data-tauri-drag-region className="flex h-full items-center gap-2 pl-[18px] pr-2.5">
       <Ghost aria-hidden="true" className="h-[18px] w-[18px] shrink-0 text-primary" />
       <input
         ref={ref}
         aria-label="Ask Ghost Query"
-        placeholder="Ask anything…"
+        placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
@@ -35,33 +40,32 @@ export const Bar = forwardRef<HTMLInputElement, BarProps>(function Bar(
           }
         }}
         spellCheck={false}
-        className="min-w-0 flex-1 bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
+        className="ml-0.5 min-w-0 flex-1 truncate bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 text-muted-foreground"
-        aria-label="Open chat panel"
-        title={`Open chat panel (${MOD}↑)`}
-        onClick={onExpand}
-      >
-        <Maximize2 className="h-4 w-4" />
-      </Button>
+      <ModelChip view={settings} onClick={onModel} />
+      <IconButton label="Open chat" shortcut={`${MOD}↑`} side="left" className="h-8 w-8" onClick={onExpand}>
+        <Maximize2 />
+      </IconButton>
       {loading ? (
-        <Button size="icon" className="h-8 w-8" aria-label="Stop" title="Stop" onClick={onStop}>
-          <Square className="h-3.5 w-3.5" />
-        </Button>
+        <IconButton
+          label="Stop"
+          side="left"
+          className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
+          onClick={onStop}
+        >
+          <Square />
+        </IconButton>
       ) : (
-        <Button
-          size="icon"
-          className="h-8 w-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-          aria-label="Send"
-          title="Send (↵)"
+        <IconButton
+          label="Send"
+          shortcut="↵"
+          side="left"
           disabled={empty}
+          className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={onSubmit}
         >
-          <ArrowUp className="h-4 w-4" />
-        </Button>
+          <ArrowUp />
+        </IconButton>
       )}
     </div>
   );

@@ -23,6 +23,11 @@
   --color-border: var(--gq-border);
   --color-input: var(--gq-border);
   --color-ring: var(--gq-primary);
+  --color-tooltip: var(--gq-foreground);
+  --color-tooltip-foreground: var(--gq-popover);
+  --color-field: var(--gq-field);
+  --color-code: var(--gq-code);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 0.875rem;
 }
 
@@ -35,6 +40,8 @@
   --gq-border: rgba(0, 0, 0, 0.09);
   --gq-primary: #007aff;
   --gq-destructive: #d70015;
+  --gq-field: rgba(255, 255, 255, 0.6);
+  --gq-code: rgba(0, 0, 0, 0.04);
   color-scheme: light;
 }
 
@@ -48,6 +55,8 @@
     --gq-border: rgba(255, 255, 255, 0.1);
     --gq-primary: #0a84ff;
     --gq-destructive: #ff453a;
+    --gq-field: rgba(255, 255, 255, 0.04);
+    --gq-code: rgba(0, 0, 0, 0.32);
     color-scheme: dark;
   }
 }
@@ -85,4 +94,22 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Typography plugin colours, mapped onto the theme (used by Markdown replies). */
+.gq-prose {
+  --tw-prose-body: var(--gq-foreground);
+  --tw-prose-headings: var(--gq-foreground);
+  --tw-prose-lead: var(--gq-foreground);
+  --tw-prose-links: var(--gq-primary);
+  --tw-prose-bold: var(--gq-foreground);
+  --tw-prose-counters: var(--gq-muted-foreground);
+  --tw-prose-bullets: var(--gq-muted-foreground);
+  --tw-prose-hr: var(--gq-border);
+  --tw-prose-quotes: var(--gq-foreground);
+  --tw-prose-quote-borders: var(--gq-border);
+  --tw-prose-captions: var(--gq-muted-foreground);
+  --tw-prose-code: var(--gq-foreground);
+  --tw-prose-th-borders: var(--gq-border);
+  --tw-prose-td-borders: var(--gq-border);
 }

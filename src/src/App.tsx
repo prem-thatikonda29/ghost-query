@@ -1,24 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  ChatInput,
-  ChatInputTextArea,
-  ChatInputSubmit,
-} from "./components/ui/chat-input";
+import { ChatInput, ChatInputTextArea } from "./components/ui/chat-input";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Button } from "./components/ui/button";
 import { SettingsPage, SettingsView } from "./components/ui/settings-page";
-import { Trash2, Copy, Check, Settings, Plus, RefreshCw, Minimize2 } from "lucide-react";
+import { ArrowUp, Check, Copy, Minimize2, Plus, RefreshCw, Settings2, Square } from "lucide-react";
 import { Markdown } from "./components/markdown";
 import { Bar } from "./components/bar";
+import { ChatSwitcher, ConversationSummary } from "./components/chat-switcher";
+import { ModelPicker } from "./components/model-picker";
+import { IconButton } from "./components/ui/icon-button";
 import { MOD } from "./lib/utils";
-
-interface ConversationSummary {
-  id: string;
-  title: string;
-  created_at: number;
-  updated_at: number;
-}
 
 interface StoredMessage {
   id: number;
@@ -28,10 +19,8 @@ interface StoredMessage {
   timestamp: number;
 }
 
-const activeLabelFor = (view: SettingsView) => {
-  const active = view.providers.find((p) => p.id === view.active);
-  return active ? `${active.name} · ${active.model || "no model"}` : "";
-};
+// Asking from the bar after this long without a message starts a new chat.
+const QUIET_MS = 5 * 60 * 1000;
 
 // The window is either a one-line bar or the chat panel (see window.rs).
 type WindowMode = "bar" | "panel";
@@ -51,7 +40,10 @@ function App() {
   const [currentId, setCurrentId] = useState("");
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [activeLabel, setActiveLabel] = useState("");
+  const [settings, setSettings] = useState<SettingsView | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Refreshed whenever the window is summoned, for the bar's quiet-period check.
+  const [now, setNow] = useState(() => Date.now());
   const [startupNotices, setStartupNotices] = useState<string[]>([]);
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
   const [mode, setMode] = useState<WindowMode>("bar");
@@ -79,6 +71,7 @@ function App() {
     modeRef.current = "bar";
     setMode("bar");
     setShowSettings(false);
+    setPickerOpen(false);
     try {
       await invoke("set_window_mode", { mode: "bar", animate: !prefersReducedMotion() });
     } catch (err) {
@@ -154,8 +147,10 @@ function App() {
       modeRef.current = "bar";
       setMode("bar");
       setShowSettings(false);
+      setPickerOpen(false);
     });
     const unlistenShown = listen("window-shown", () => {
+      setNow(Date.now());
       (modeRef.current === "bar" ? barRef.current : inputRef.current)?.focus();
     });
 
@@ -175,7 +170,9 @@ function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (e.key === "Escape" && !e.isComposing) {
+      // An open popup (chat list, model picker, tooltip) closes first; Radix marks
+      // that Esc as handled.
+      if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented) {
         if (showSettings) setShowSettings(false);
         else if (mode === "panel") collapse();
         else invoke("hide_window");
@@ -195,7 +192,7 @@ function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [mode, showSettings, isLoading]);
+  }, [mode, showSettings, isLoading, messages]);
 
   // Startup problems need room to be read, so they open the panel.
   useEffect(() => {
@@ -230,7 +227,7 @@ function App() {
 
     invoke<SettingsView>("get_settings")
       .then((view) => {
-        setActiveLabel(activeLabelFor(view));
+        setSettings(view);
         // First run: the active provider needs a key, so open settings straight away.
         const active = view.providers.find((p) => p.id === view.active);
         if (active && active.needs_key && !active.has_key) openSettings();
@@ -244,7 +241,9 @@ function App() {
     }
   }, [messages, response, pendingUser]);
 
+  // An empty current chat is reused rather than piling up untitled ones.
   const newChat = async () => {
+    if (messages.length === 0 && currentIdRef.current) return;
     try {
       const created = await invoke<ConversationSummary>("create_conversation");
       await refreshConversations();
@@ -254,20 +253,23 @@ function App() {
     }
   };
 
-  const deleteChat = async () => {
+  const deleteChat = async (id: string) => {
     try {
-      await invoke("delete_conversation", { conversationId: currentId });
+      await invoke("delete_conversation", { conversationId: id });
       let list = await refreshConversations();
       if (list.length === 0) {
         await invoke("create_conversation");
         list = await refreshConversations();
       }
-      await selectConversation(list[0].id);
+      if (id === currentIdRef.current || !list.some((c) => c.id === currentIdRef.current)) {
+        await selectConversation(list[0].id);
+      }
     } catch (err) {
       setError(String(err));
     }
   };
 
+  // Uses the ref, so a chat created just before (see submitFromBar) is the one asked in.
   const send = async (prompt: string, regenerate: boolean) => {
     setIsLoading(true);
     setError("");
@@ -276,7 +278,7 @@ function App() {
     setPendingUser(regenerate ? "" : prompt);
     try {
       await invoke("ask_ai_stream", {
-        conversationId: currentId,
+        conversationId: currentIdRef.current,
         prompt,
         regenerate,
       });
@@ -292,11 +294,22 @@ function App() {
     if (message.trim() && !isLoading) send(message, false);
   };
 
-  // Asking from the bar grows the window into the panel to show the answer.
+  const lastTimestamp = messages[messages.length - 1]?.timestamp;
+  const continuing = lastTimestamp !== undefined && now - lastTimestamp < QUIET_MS;
+
+  // Asking from the bar grows the window into the panel to show the answer. After a
+  // quiet spell the question starts a new chat instead of continuing the last one.
   const submitFromBar = async () => {
     if (!message.trim() || isLoading) return;
+    if (lastTimestamp !== undefined && Date.now() - lastTimestamp >= QUIET_MS) await newChat();
     await expand();
     send(message, false);
+  };
+
+  // The bar has no room for the list, so its chip opens the panel's picker.
+  const openPickerFromBar = async () => {
+    await expand();
+    setPickerOpen(true);
   };
 
   const handleStop = async () => {
@@ -320,6 +333,7 @@ function App() {
 
   // The rounded surface of the transparent window (see index.css).
   const shell = "h-full w-full overflow-hidden rounded-[14px] border border-border bg-background text-foreground";
+  const currentTitle = conversations.find((c) => c.id === currentId)?.title ?? "";
 
   if (mode === "bar") {
     return (
@@ -330,8 +344,15 @@ function App() {
           onChange={setMessage}
           onSubmit={submitFromBar}
           onExpand={expand}
+          onModel={openPickerFromBar}
           loading={isLoading}
           onStop={handleStop}
+          settings={settings}
+          placeholder={
+            continuing && currentTitle
+              ? `Follow up on “${currentTitle.length > 40 ? `${currentTitle.slice(0, 39)}…` : currentTitle}”`
+              : "Ask anything…"
+          }
         />
       </div>
     );
@@ -340,10 +361,7 @@ function App() {
   if (showSettings) {
     return (
       <div className={shell}>
-        <SettingsPage
-          onBack={() => setShowSettings(false)}
-          onChanged={(view) => setActiveLabel(activeLabelFor(view))}
-        />
+        <SettingsPage onBack={() => setShowSettings(false)} onChanged={setSettings} />
       </div>
     );
   }
@@ -353,118 +371,78 @@ function App() {
   const shownMessages =
     regenerating && lastMessage?.role === "assistant" ? messages.slice(0, -1) : messages;
   const lastAssistantId = lastMessage?.role === "assistant" ? lastMessage.id : null;
+  const canSend = message.trim().length > 0;
 
   return (
     <div className={`${shell} flex flex-col`}>
-      {/* Header: drags the window; icon buttons on the right */}
+      {/* Header: drags the window; chat title on the left, icon buttons on the right */}
       <div
         data-tauri-drag-region
-        className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border pl-2.5 pr-2"
+        className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-2"
       >
-        <select
-          className="min-w-0 max-w-xs rounded-md bg-transparent px-1.5 py-1 text-[13px] font-semibold outline-none hover:bg-muted"
-          value={currentId}
+        <ChatSwitcher
+          conversations={conversations}
+          currentId={currentId}
           disabled={isLoading}
-          onChange={(e) => selectConversation(e.target.value)}
-          aria-label="Conversation"
-          title="Conversations"
-        >
-          {conversations.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title}
-            </option>
-          ))}
-        </select>
+          onSelect={selectConversation}
+          onDelete={deleteChat}
+        />
         <div className="flex shrink-0 gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-[30px] w-[30px]"
-            onClick={newChat}
-            disabled={isLoading}
-            aria-label="New chat"
-            title={`New chat (${MOD}N)`}
-          >
-            <Plus className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-[30px] w-[30px] text-muted-foreground"
-            onClick={deleteChat}
-            disabled={isLoading || messages.length === 0}
-            aria-label="Delete this chat"
-            title="Delete this chat"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-[30px] w-[30px] text-muted-foreground"
-            onClick={collapse}
-            aria-label="Collapse to bar"
-            title="Collapse to bar (Esc)"
-          >
-            <Minimize2 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-[30px] w-[30px] text-muted-foreground"
-            onClick={openSettings}
-            aria-label="Settings"
-            title={`Settings (${MOD},)${activeLabel ? ` · ${activeLabel}` : ""}`}
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
+          <IconButton label="New chat" shortcut={`${MOD}N`} onClick={newChat} disabled={isLoading}>
+            <Plus />
+          </IconButton>
+          <IconButton label="Collapse to bar" shortcut="Esc" onClick={collapse}>
+            <Minimize2 />
+          </IconButton>
+          <IconButton label="Settings" shortcut={`${MOD},`} onClick={openSettings}>
+            <Settings2 />
+          </IconButton>
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3">
-        {startupNotices.map((notice) => (
-          <div key={notice} className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
-            {notice}
-          </div>
-        ))}
+      {/* Thread */}
+      <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5 px-5 py-6">
+          {startupNotices.map((notice) => (
+            <div key={notice} role="status" className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+              {notice}
+            </div>
+          ))}
 
-        {/* Message thread */}
-        <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto mb-4 space-y-3">
           {shownMessages.map((msg) =>
             msg.role === "user" ? (
-              <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
-                  {msg.content}
-                </div>
+              <div
+                key={msg.id}
+                className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed"
+              >
+                {msg.content}
               </div>
             ) : (
-              <div key={msg.id} className="rounded-lg bg-muted/50 border p-4 group">
+              <div key={msg.id} className="group flex flex-col gap-1">
                 <Markdown text={msg.content} />
-                <div className="mt-2 flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
+                <div
+                  className={`-ml-1.5 flex items-center gap-0.5 ${
+                    msg.id === lastAssistantId ? "" : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
+                  }`}
+                >
+                  <IconButton
+                    label={copiedStates[`msg-${msg.id}`] ? "Copied" : "Copy reply"}
+                    className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
                     onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
-                    title="Copy"
                   >
-                    {copiedStates[`msg-${msg.id}`] ? (
-                      <Check className="h-4 w-4" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </Button>
+                    {copiedStates[`msg-${msg.id}`] ? <Check /> : <Copy />}
+                  </IconButton>
                   {msg.id === lastAssistantId && !isLoading && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
+                    <IconButton
+                      label="Regenerate reply"
+                      className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
                       onClick={() => send("", true)}
-                      title="Regenerate"
                     >
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
+                      <RefreshCw />
+                    </IconButton>
                   )}
                   {msg.status === "cancelled" && (
-                    <span className="text-xs text-muted-foreground">(incomplete)</span>
+                    <span className="ml-1 text-xs text-muted-foreground">(incomplete)</span>
                   )}
                 </div>
               </div>
@@ -472,44 +450,76 @@ function App() {
           )}
 
           {pendingUser && (
-            <div className="flex justify-end">
-              <div className="max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
-                {pendingUser}
-              </div>
+            <div className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed">
+              {pendingUser}
             </div>
           )}
 
-          {isLoading && (
-            <div className="rounded-lg bg-muted/50 border p-4">
-              {response ? (
-                <Markdown text={response} />
-              ) : (
-                <span className="text-sm text-muted-foreground">Thinking...</span>
-              )}
+          {isLoading &&
+            (response ? (
+              <Markdown text={response} />
+            ) : (
+              <span className="animate-pulse text-sm text-muted-foreground">Thinking…</span>
+            ))}
+
+          {error && (
+            <div role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
+              {error}
             </div>
           )}
         </div>
+      </div>
 
-        {/* Error Display */}
-        {error && (
-          <div className="mb-4 p-4 rounded-lg bg-destructive/10 border border-destructive/20">
-            <div className="text-sm text-destructive">{error}</div>
+      {/* Composer */}
+      <div className="shrink-0 px-4 pb-4">
+        <ChatInput
+          variant="unstyled"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onSubmit={handleSubmit}
+          loading={isLoading}
+          onStop={handleStop}
+          className="mx-auto max-w-[672px] flex-col items-stretch gap-1.5 rounded-xl border border-border bg-field px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-primary/50"
+        >
+          <ChatInputTextArea
+            ref={inputRef}
+            variant="unstyled"
+            aria-label="Message"
+            placeholder={messages.length > 0 ? "Ask a follow-up…" : "Ask anything…"}
+            className="max-h-40 min-h-0 rounded-none bg-transparent p-0 text-sm leading-relaxed placeholder:text-muted-foreground"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <ModelPicker
+              view={settings}
+              open={pickerOpen}
+              onOpenChange={setPickerOpen}
+              onPicked={setSettings}
+              onManage={openSettings}
+              onError={setError}
+            />
+            {isLoading ? (
+              <IconButton
+                label="Stop"
+                side="top"
+                className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
+                onClick={handleStop}
+              >
+                <Square />
+              </IconButton>
+            ) : (
+              <IconButton
+                label="Send"
+                shortcut="↵"
+                side="top"
+                disabled={!canSend}
+                className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleSubmit}
+              >
+                <ArrowUp />
+              </IconButton>
+            )}
           </div>
-        )}
-
-        {/* Input Area */}
-        <div className="w-full flex-shrink-0">
-          <ChatInput
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onSubmit={handleSubmit}
-            loading={isLoading}
-            onStop={handleStop}
-          >
-            <ChatInputTextArea ref={inputRef} placeholder="Type your question here" />
-            <ChatInputSubmit />
-          </ChatInput>
-        </div>
+        </ChatInput>
       </div>
     </div>
   );
