@@ -6,8 +6,12 @@
 //! On macOS a normal window cannot appear over another app's fullscreen Space, so the
 //! main window is converted into a non-activating `NSPanel` that joins all Spaces as a
 //! fullscreen auxiliary window. Show/hide then have to go through the panel.
+//!
+//! The window is either a Spotlight-like bar or the chat panel; see
+//! `ghost_core::geometry` for how one turns into the other.
 
-use tauri::{Runtime, WebviewWindow};
+use ghost_core::geometry::{self, Rect, BAR_SIZE, PANEL_MIN_SIZE, PANEL_SIZE};
+use tauri::{LogicalSize, Monitor, Runtime, WebviewWindow};
 
 #[cfg(target_os = "macos")]
 tauri_nspanel::tauri_panel! {
@@ -79,10 +83,89 @@ pub fn hide<R: Runtime>(window: &WebviewWindow<R>) {
     let _ = window.hide();
 }
 
-pub fn toggle<R: Runtime>(window: &WebviewWindow<R>) {
-    if is_visible(window) {
-        hide(window);
-    } else {
-        show(window);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Bar,
+    Panel,
+}
+
+impl Mode {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "bar" => Some(Self::Bar),
+            "panel" => Some(Self::Panel),
+            _ => None,
+        }
+    }
+}
+
+/// The window's outer frame in logical pixels.
+pub fn frame<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<Rect> {
+    let scale = window.scale_factor()?;
+    let position = window.outer_position()?.to_logical::<f64>(scale);
+    let size = window.outer_size()?.to_logical::<f64>(scale);
+    Ok(Rect { x: position.x, y: position.y, width: size.width, height: size.height })
+}
+
+/// A monitor's usable area (without the menu bar, Dock or taskbar) in logical pixels.
+pub fn work_area(monitor: &Monitor) -> Rect {
+    let area = monitor.work_area();
+    let position = area.position.to_logical::<f64>(monitor.scale_factor());
+    let size = area.size.to_logical::<f64>(monitor.scale_factor());
+    Rect { x: position.x, y: position.y, width: size.width, height: size.height }
+}
+
+/// Resizes the window into the bar or the panel, keeping its top edge and centre. Only
+/// the panel can be resized by the user.
+pub fn set_mode<R: Runtime>(window: &WebviewWindow<R>, mode: Mode, animate: bool) -> tauri::Result<()> {
+    let size = match mode {
+        Mode::Bar => BAR_SIZE,
+        Mode::Panel => PANEL_SIZE,
+    };
+    let anchor = frame(window)?.anchor();
+    let target = match window.current_monitor()? {
+        Some(monitor) => geometry::place(anchor, size, work_area(&monitor)),
+        None => Rect { x: anchor.center_x - size.0 / 2.0, y: anchor.top, width: size.0, height: size.1 },
+    };
+    window.set_min_size(None::<LogicalSize<f64>>)?;
+    window.set_resizable(mode == Mode::Panel)?;
+    set_frame(window, target, animate)?;
+    if mode == Mode::Panel {
+        window.set_min_size(Some(LogicalSize::new(PANEL_MIN_SIZE.0, PANEL_MIN_SIZE.1)))?;
+    }
+    Ok(())
+}
+
+/// Moves and resizes the window in one step. On macOS this goes through AppKit, which
+/// can animate the change; elsewhere it is immediate.
+pub fn set_frame<R: Runtime>(window: &WebviewWindow<R>, target: Rect, animate: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindow;
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+        let current = frame(window)?;
+        // A raw pointer is not Send; the address is only turned back into a reference
+        // on the main thread, where AppKit requires it to be used.
+        let ns_window = window.ns_window()? as usize;
+        return window.run_on_main_thread(move || {
+            // SAFETY: the address is this window's live NSWindow, which outlives the call.
+            let ns_window = unsafe { &*(ns_window as *const NSWindow) };
+            let old = ns_window.frame();
+            // AppKit's origin is the bottom-left corner with y pointing up, so the change
+            // is applied relative to the current frame rather than converted.
+            let top = old.origin.y + old.size.height - (target.y - current.y);
+            let rect = NSRect::new(
+                NSPoint::new(old.origin.x + (target.x - current.x), top - target.height),
+                NSSize::new(target.width, target.height),
+            );
+            ns_window.setFrame_display_animate(rect, true, animate);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = animate;
+        window.set_size(LogicalSize::new(target.width, target.height))?;
+        window.set_position(tauri::LogicalPosition::new(target.x, target.y))
     }
 }

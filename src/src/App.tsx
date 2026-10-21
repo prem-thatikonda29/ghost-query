@@ -8,8 +8,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
 import { SettingsPage, SettingsView } from "./components/ui/settings-page";
-import { Trash2, Copy, Check, Settings, Plus, RefreshCw } from "lucide-react";
+import { Trash2, Copy, Check, Settings, Plus, RefreshCw, Minimize2 } from "lucide-react";
 import { Markdown } from "./components/markdown";
+import { Bar } from "./components/bar";
+import { MOD } from "./lib/utils";
 
 interface ConversationSummary {
   id: string;
@@ -31,6 +33,11 @@ const activeLabelFor = (view: SettingsView) => {
   return active ? `${active.name} · ${active.model || "no model"}` : "";
 };
 
+// The window is either a one-line bar or the chat panel (see window.rs).
+type WindowMode = "bar" | "panel";
+
+const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function App() {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -47,9 +54,42 @@ function App() {
   const [activeLabel, setActiveLabel] = useState("");
   const [startupNotices, setStartupNotices] = useState<string[]>([]);
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
+  const [mode, setMode] = useState<WindowMode>("bar");
+  const modeRef = useRef<WindowMode>("bar");
   const currentIdRef = useRef("");
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const barRef = useRef<HTMLInputElement>(null);
+
+  // Growing: the window is resized first, then the panel is drawn into it.
+  // Shrinking: the bar is drawn first, then the window shrinks around it.
+  const expand = async () => {
+    if (modeRef.current === "panel") return;
+    modeRef.current = "panel";
+    try {
+      await invoke("set_window_mode", { mode: "panel", animate: !prefersReducedMotion() });
+    } catch (err) {
+      console.error("Failed to expand the window:", err);
+    }
+    setMode("panel");
+  };
+
+  const collapse = async () => {
+    if (modeRef.current === "bar") return;
+    modeRef.current = "bar";
+    setMode("bar");
+    setShowSettings(false);
+    try {
+      await invoke("set_window_mode", { mode: "bar", animate: !prefersReducedMotion() });
+    } catch (err) {
+      console.error("Failed to collapse the window:", err);
+    }
+  };
+
+  const openSettings = async () => {
+    await expand();
+    setShowSettings(true);
+  };
 
   const refreshConversations = async () => {
     const list = await invoke<ConversationSummary[]>("list_conversations");
@@ -109,7 +149,19 @@ function App() {
       setIsLoading(false);
     });
 
+    // Dismissing the window (Esc, the shortcut) folds it back into the bar.
+    const unlistenCollapsed = listen("window-collapsed", () => {
+      modeRef.current = "bar";
+      setMode("bar");
+      setShowSettings(false);
+    });
+    const unlistenShown = listen("window-shown", () => {
+      (modeRef.current === "bar" ? barRef.current : inputRef.current)?.focus();
+    });
+
     return () => {
+      unlistenCollapsed.then((unlisten) => unlisten());
+      unlistenShown.then((unlisten) => unlisten());
       unlistenChunk.then((unlisten) => unlisten());
       unlistenDone.then((unlisten) => unlisten());
       unlistenError.then((unlisten) => unlisten());
@@ -117,27 +169,52 @@ function App() {
     };
   }, []);
 
-  // Frameless ghost window: Esc hides it (the global shortcut brings it back) and
-  // Ctrl/Cmd+Q quits, since there is no Dock icon or title bar to do either.
+  // Frameless ghost window, so the keyboard does what a title bar would: Esc steps back
+  // (settings → panel → bar → hidden; the global shortcut brings it back) and Cmd/Ctrl+Q
+  // quits, since there is no Dock icon either.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        invoke("hide_window");
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "q") {
+      const mod = e.metaKey || e.ctrlKey;
+      if (e.key === "Escape" && !e.isComposing) {
+        if (showSettings) setShowSettings(false);
+        else if (mode === "panel") collapse();
+        else invoke("hide_window");
+      } else if (mod && e.key.toLowerCase() === "q") {
         e.preventDefault();
         invoke("quit_app");
+      } else if (mod && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        if (!isLoading) newChat();
+      } else if (mod && e.key === "ArrowUp" && mode === "bar") {
+        e.preventDefault();
+        expand();
+      } else if (mod && e.key === ",") {
+        e.preventDefault();
+        openSettings();
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    invoke<string[]>("get_startup_notices")
-      .then(setStartupNotices)
-      .catch(() => {});
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mode, showSettings, isLoading]);
+
+  // Startup problems need room to be read, so they open the panel.
+  useEffect(() => {
+    invoke<string[]>("get_startup_notices")
+      .then((notices) => {
+        setStartupNotices(notices);
+        if (notices.length > 0) expand();
+      })
+      .catch(() => {});
   }, []);
+
+  // Focus follows the mode: the bar's field, or the panel's composer.
+  useEffect(() => {
+    if (mode === "bar") barRef.current?.focus();
+    else if (!showSettings) inputRef.current?.focus();
+  }, [mode, showSettings]);
 
   // On mount: open the most recent conversation (or a fresh one) and load settings.
   useEffect(() => {
-    inputRef.current?.focus();
     (async () => {
       try {
         let list = await refreshConversations();
@@ -156,7 +233,7 @@ function App() {
         setActiveLabel(activeLabelFor(view));
         // First run: the active provider needs a key, so open settings straight away.
         const active = view.providers.find((p) => p.id === view.active);
-        if (active && active.needs_key && !active.has_key) setShowSettings(true);
+        if (active && active.needs_key && !active.has_key) openSettings();
       })
       .catch((err) => console.error("Failed to load settings:", err));
   }, []);
@@ -215,6 +292,13 @@ function App() {
     if (message.trim() && !isLoading) send(message, false);
   };
 
+  // Asking from the bar grows the window into the panel to show the answer.
+  const submitFromBar = async () => {
+    if (!message.trim() || isLoading) return;
+    await expand();
+    send(message, false);
+  };
+
   const handleStop = async () => {
     try {
       await invoke("stop_streaming");
@@ -234,12 +318,33 @@ function App() {
     }
   };
 
+  // The rounded surface of the transparent window (see index.css).
+  const shell = "h-full w-full overflow-hidden rounded-[14px] border border-border bg-background text-foreground";
+
+  if (mode === "bar") {
+    return (
+      <div className={shell}>
+        <Bar
+          ref={barRef}
+          value={message}
+          onChange={setMessage}
+          onSubmit={submitFromBar}
+          onExpand={expand}
+          loading={isLoading}
+          onStop={handleStop}
+        />
+      </div>
+    );
+  }
+
   if (showSettings) {
     return (
-      <SettingsPage
-        onBack={() => setShowSettings(false)}
-        onChanged={(view) => setActiveLabel(activeLabelFor(view))}
-      />
+      <div className={shell}>
+        <SettingsPage
+          onBack={() => setShowSettings(false)}
+          onChanged={(view) => setActiveLabel(activeLabelFor(view))}
+        />
+      </div>
     );
   }
 
@@ -250,53 +355,73 @@ function App() {
   const lastAssistantId = lastMessage?.role === "assistant" ? lastMessage.id : null;
 
   return (
-    <div className="w-full flex flex-col h-screen p-4">
-      <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
-        {/* Header with controls */}
-        <div data-tauri-drag-region className="flex justify-between items-center mb-4 gap-2">
-          <div data-tauri-drag-region className="flex items-center gap-2 min-w-0">
-            <h1 data-tauri-drag-region className="text-lg font-semibold shrink-0">Ghost Query</h1>
-            <select
-              className="min-w-0 max-w-xs rounded-lg border border-input bg-background px-2 py-1 text-sm"
-              value={currentId}
-              disabled={isLoading}
-              onChange={(e) => selectConversation(e.target.value)}
-              title="Conversations"
-            >
-              {conversations.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            <Button variant="outline" size="sm" onClick={newChat} disabled={isLoading}>
-              <Plus className="h-4 w-4 mr-1" />
-              New chat
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={deleteChat}
-              disabled={isLoading || messages.length === 0}
-              title="Delete this conversation"
-            >
-              <Trash2 className="h-4 w-4 mr-1" />
-              Delete
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowSettings(true)}
-              title="Provider settings"
-            >
-              <Settings className="h-4 w-4 mr-1" />
-              {activeLabel || "Settings"}
-            </Button>
-          </div>
+    <div className={`${shell} flex flex-col`}>
+      {/* Header: drags the window; icon buttons on the right */}
+      <div
+        data-tauri-drag-region
+        className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border pl-2.5 pr-2"
+      >
+        <select
+          className="min-w-0 max-w-xs rounded-md bg-transparent px-1.5 py-1 text-[13px] font-semibold outline-none hover:bg-muted"
+          value={currentId}
+          disabled={isLoading}
+          onChange={(e) => selectConversation(e.target.value)}
+          aria-label="Conversation"
+          title="Conversations"
+        >
+          {conversations.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.title}
+            </option>
+          ))}
+        </select>
+        <div className="flex shrink-0 gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-[30px] w-[30px]"
+            onClick={newChat}
+            disabled={isLoading}
+            aria-label="New chat"
+            title={`New chat (${MOD}N)`}
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-[30px] w-[30px] text-muted-foreground"
+            onClick={deleteChat}
+            disabled={isLoading || messages.length === 0}
+            aria-label="Delete this chat"
+            title="Delete this chat"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-[30px] w-[30px] text-muted-foreground"
+            onClick={collapse}
+            aria-label="Collapse to bar"
+            title="Collapse to bar (Esc)"
+          >
+            <Minimize2 className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-[30px] w-[30px] text-muted-foreground"
+            onClick={openSettings}
+            aria-label="Settings"
+            title={`Settings (${MOD},)${activeLabel ? ` · ${activeLabel}` : ""}`}
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
         </div>
+      </div>
 
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3">
         {startupNotices.map((notice) => (
           <div key={notice} className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
             {notice}
@@ -308,7 +433,7 @@ function App() {
           {shownMessages.map((msg) =>
             msg.role === "user" ? (
               <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+                <div className="max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
                   {msg.content}
                 </div>
               </div>
@@ -348,7 +473,7 @@ function App() {
 
           {pendingUser && (
             <div className="flex justify-end">
-              <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+              <div className="max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
                 {pendingUser}
               </div>
             </div>

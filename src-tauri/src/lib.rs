@@ -3,6 +3,7 @@ mod window;
 use ghost_core::conversation::{build_request_messages, HISTORY_TOKEN_BUDGET};
 use ghost_core::db::{ConversationSummary, Db, StoredMessage};
 use ghost_core::debounce::Debounce;
+use ghost_core::geometry::{self, Anchor, Rect, BAR_SIZE};
 use ghost_core::provider::{ModelInfo, Outcome};
 use ghost_core::settings::Settings;
 use ghost_core::keystore::KeyStore;
@@ -297,14 +298,63 @@ async fn ask_ai_stream(
     Ok(())
 }
 
+/// Saves where the window is, so it reopens there after a restart.
+fn remember_position(app: &AppHandle, window: &WebviewWindow) {
+    let (Ok(path), Ok(frame)) = (settings_path(app), window::frame(window)) else { return };
+    let mut settings = Settings::load(&path);
+    if settings.window_anchor != Some(frame.anchor()) {
+        settings.window_anchor = Some(frame.anchor());
+        let _ = settings.save(&path);
+    }
+}
+
+/// Hides the window and folds it back into the bar, so the next summon starts there.
+fn dismiss(window: &WebviewWindow) {
+    remember_position(window.app_handle(), window);
+    window::hide(window);
+    if let Err(e) = window::set_mode(window, window::Mode::Bar, false) {
+        log::warn!("could not collapse the window: {e}");
+    }
+    let _ = window.emit("window-collapsed", ());
+}
+
+fn summon(window: &WebviewWindow) {
+    window::show(window);
+    let _ = window.emit("window-shown", ());
+}
+
+/// Puts the bar where the user last left it, or near the top of the main screen.
+fn place_at_startup(window: &WebviewWindow, saved: Option<Anchor>) {
+    let screens: Vec<Rect> = window.available_monitors().unwrap_or_default().iter().map(window::work_area).collect();
+    let placement = saved.and_then(|anchor| geometry::screen_for(anchor, &screens).map(|area| (anchor, area)));
+    let Some((anchor, area)) = placement.or_else(|| {
+        let area = window::work_area(&window.primary_monitor().ok()??);
+        Some((geometry::default_anchor(area), area))
+    }) else {
+        return;
+    };
+    if let Err(e) = window::set_frame(window, geometry::place(anchor, BAR_SIZE, area), false) {
+        log::warn!("could not position the window: {e}");
+    }
+}
+
 #[tauri::command]
 fn hide_window(window: WebviewWindow) {
-    window::hide(&window);
+    dismiss(&window);
+}
+
+/// Switches between the bar and the chat panel. `animate` is false when the user has
+/// asked the system to reduce motion.
+#[tauri::command]
+fn set_window_mode(window: WebviewWindow, mode: String, animate: bool) -> Result<(), String> {
+    let mode = window::Mode::parse(&mode).ok_or_else(|| format!("Unknown window mode: {mode}"))?;
+    window::set_mode(&window, mode, animate).map_err(|e| e.to_string())
 }
 
 /// With no Dock icon or taskbar entry, the app needs its own way to quit.
 #[tauri::command]
-fn quit_app(app: AppHandle) {
+fn quit_app(app: AppHandle, window: WebviewWindow) {
+    remember_position(&app, &window);
     app.exit(0);
 }
 
@@ -384,7 +434,11 @@ pub fn run() {
                         return;
                     }
                     if let Some(main) = app.get_webview_window("main") {
-                        window::toggle(&main);
+                        if window::is_visible(&main) {
+                            dismiss(&main);
+                        } else {
+                            summon(&main);
+                        }
                     }
                 })
                 .build(),
@@ -398,6 +452,7 @@ pub fn run() {
             delete_conversation,
             get_messages,
             hide_window,
+            set_window_mode,
             quit_app,
             set_hide_from_capture,
             get_startup_notices,
@@ -439,6 +494,8 @@ pub fn run() {
                     notices.push(format!("The window could not be set up to float over fullscreen apps ({e})."));
                 }
             }
+
+            place_at_startup(&window, settings.window_anchor);
 
             // Ctrl+Shift+Space summons/dismisses the window.
             if let Err(e) = app.global_shortcut().register("ctrl+shift+space") {

@@ -4,6 +4,7 @@
 pub mod conversation;
 pub mod db;
 pub mod debounce;
+pub mod geometry;
 pub mod keystore;
 pub mod provider;
 pub mod providers;

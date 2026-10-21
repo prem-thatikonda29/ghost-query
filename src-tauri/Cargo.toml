@@ -21,7 +21,7 @@ tauri-build = { version = "2.4.1", features = [] }
 ghost-core = { path = "../ghost-core" }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.8.5", features = [] }
+tauri = { version = "2.8.5", features = ["macos-private-api"] }
 tauri-plugin-log = "2.0"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-opener = "2"
@@ -30,3 +30,5 @@ tokio-util = "0.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"

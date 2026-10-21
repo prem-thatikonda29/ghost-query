@@ -1,51 +1,88 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-@theme {
-  --color-background: #1f2023;
-  --color-foreground: #f5f5f7;
-  --color-card: #1f2023;
-  --color-card-foreground: #f5f5f7;
-  --color-popover: #1f2023;
-  --color-popover-foreground: #f5f5f7;
-  --color-primary: #007aff;
+/* Colours come from the --gq-* variables below, so one set of utilities serves both
+   themes. Light is the default; dark follows the system appearance. */
+@theme inline {
+  --color-background: var(--gq-background);
+  --color-foreground: var(--gq-foreground);
+  --color-card: var(--gq-background);
+  --color-card-foreground: var(--gq-foreground);
+  --color-popover: var(--gq-popover);
+  --color-popover-foreground: var(--gq-foreground);
+  --color-primary: var(--gq-primary);
   --color-primary-foreground: #ffffff;
-  --color-secondary: #2e3033;
-  --color-secondary-foreground: #f5f5f7;
-  --color-muted: #2e3033;
-  --color-muted-foreground: #9ca3af;
-  --color-accent: #2e3033;
-  --color-accent-foreground: #f5f5f7;
-  --color-destructive: #ef4444;
+  --color-secondary: var(--gq-muted);
+  --color-secondary-foreground: var(--gq-foreground);
+  --color-muted: var(--gq-muted);
+  --color-muted-foreground: var(--gq-muted-foreground);
+  --color-accent: var(--gq-muted);
+  --color-accent-foreground: var(--gq-foreground);
+  --color-destructive: var(--gq-destructive);
   --color-destructive-foreground: #ffffff;
-  --color-border: #444444;
-  --color-input: #444444;
-  --color-ring: #007aff;
-  --radius: 0.75rem;
+  --color-border: var(--gq-border);
+  --color-input: var(--gq-border);
+  --color-ring: var(--gq-primary);
+  --radius: 0.875rem;
 }
 
-/* Base styles */
+:root {
+  --gq-background: #f6f6f8;
+  --gq-popover: #ffffff;
+  --gq-foreground: #1d1d1f;
+  --gq-muted: rgba(0, 0, 0, 0.05);
+  --gq-muted-foreground: #5f5f66;
+  --gq-border: rgba(0, 0, 0, 0.09);
+  --gq-primary: #007aff;
+  --gq-destructive: #d70015;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gq-background: #1e1e21;
+    --gq-popover: #2a2a2e;
+    --gq-foreground: #f5f5f7;
+    --gq-muted: rgba(255, 255, 255, 0.07);
+    --gq-muted-foreground: #a8a8ae;
+    --gq-border: rgba(255, 255, 255, 0.1);
+    --gq-primary: #0a84ff;
+    --gq-destructive: #ff453a;
+    color-scheme: dark;
+  }
+}
+
+/* On macOS the window has a native frosted background behind the page, so the
+   surface is only a light tint over it. */
+:root.translucent {
+  --gq-background: rgba(246, 246, 248, 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root.translucent {
+    --gq-background: rgba(30, 30, 33, 0.55);
+  }
+}
+
 * {
   box-sizing: border-box;
 }
 
+/* The window itself is transparent; the rounded shell in App paints the surface. */
 html,
-body {
+body,
+#root {
   margin: 0;
   padding: 0;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   overflow: hidden;
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, sans-serif;
+  background: transparent;
 }
 
-#root {
-  height: 100vh;
-  width: 100vw;
-  display: flex;
-  flex-direction: column;
-  background-color: var(--color-background);
+body {
+  color: var(--gq-foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
 }

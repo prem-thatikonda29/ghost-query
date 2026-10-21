@@ -1,3 +1,4 @@
+use crate::geometry::Anchor;
 use crate::providers::{preset, CUSTOM_ID};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -50,6 +51,9 @@ pub struct Settings {
     pub providers: BTreeMap<String, ProviderConfig>,
     /// Ask the OS to exclude the window from screenshots and screen sharing.
     pub hide_from_capture: bool,
+    /// Where the user last left the window (its top-centre point); `None` until it has
+    /// been shown and dismissed once.
+    pub window_anchor: Option<Anchor>,
 }
 
 impl Default for Settings {
@@ -58,6 +62,7 @@ impl Default for Settings {
             active: DEFAULT_ACTIVE.to_string(),
             providers: BTreeMap::new(),
             hide_from_capture: true,
+            window_anchor: None,
         }
     }
 }
@@ -272,6 +277,7 @@ mod tests {
         let mut s = Settings::default();
         s.update_provider("groq", "", "m").unwrap();
         s.set_active("groq").unwrap();
+        s.window_anchor = Some(Anchor { center_x: 720.0, top: 244.5 });
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
         std::fs::remove_file(&path).unwrap();
@@ -286,6 +292,7 @@ mod tests {
         let loaded = Settings::load(&path);
         assert_eq!(loaded.active, "groq");
         assert!(loaded.hide_from_capture);
+        assert_eq!(loaded.window_anchor, None);
         std::fs::remove_file(&path).unwrap();
     }
 

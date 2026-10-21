@@ -134,7 +134,7 @@ export function SettingsPage({ onBack, onChanged }: SettingsPageProps) {
   };
 
   return (
-    <div className="w-full flex flex-col h-screen p-4">
+    <div className="w-full flex flex-col h-full p-4">
       <div className="flex-1 flex flex-col max-w-xl mx-auto w-full min-h-0 overflow-y-auto">
         <div data-tauri-drag-region className="flex items-center gap-2 mb-4">
           <Button variant="outline" size="sm" onClick={onBack}>

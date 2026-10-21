@@ -101,6 +101,8 @@ version = "0.2.0"
 dependencies = [
  "ghost-core",
  "log",
+ "objc2-app-kit",
+ "objc2-foundation 0.3.2",
  "reqwest 0.12.23",
  "serde",
  "tauri",
