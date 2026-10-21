@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown, Search } from "lucide-react";
-import type { ProviderView, SettingsView } from "./ui/settings-page";
+import type { ProviderView, SettingsView } from "./settings-sheet";
 
 interface ModelInfo {
   id: string;
@@ -91,7 +91,7 @@ export function ModelPicker({ view, open, onOpenChange, onPicked, onManage, onEr
     onOpenChange(false);
     try {
       onPicked(
-        await invoke<SettingsView>("save_provider", { id: p.id, baseUrl: p.base_url, model, apiKey: null })
+        await invoke<SettingsView>("save_provider", { id: p.id, baseUrl: p.base_url, model, apiKey: null, activate: true })
       );
     } catch (err) {
       onError(String(err));

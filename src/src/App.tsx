@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ChatInput, ChatInputTextArea } from "./components/ui/chat-input";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { SettingsPage, SettingsView } from "./components/ui/settings-page";
+import { SettingsSheet, SettingsView } from "./components/settings-sheet";
 import { ArrowUp, Check, Copy, Minimize2, Plus, RefreshCw, Settings2, Square } from "lucide-react";
 import { Markdown } from "./components/markdown";
 import { Bar } from "./components/bar";
@@ -358,14 +358,6 @@ function App() {
     );
   }
 
-  if (showSettings) {
-    return (
-      <div className={shell}>
-        <SettingsPage onBack={() => setShowSettings(false)} onChanged={setSettings} />
-      </div>
-    );
-  }
-
   // While regenerating, the answer being replaced is hidden.
   const lastMessage = messages[messages.length - 1];
   const shownMessages =
@@ -375,6 +367,8 @@ function App() {
 
   return (
     <div className={`${shell} flex flex-col`}>
+      <SettingsSheet open={showSettings} onOpenChange={setShowSettings} onChanged={setSettings} />
+
       {/* Header: drags the window; chat title on the left, icon buttons on the right */}
       <div
         data-tauri-drag-region

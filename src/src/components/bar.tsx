@@ -2,7 +2,7 @@ import { forwardRef } from "react";
 import { ArrowUp, Ghost, Maximize2, Square } from "lucide-react";
 import { IconButton } from "./ui/icon-button";
 import { ModelChip } from "./model-picker";
-import type { SettingsView } from "./ui/settings-page";
+import type { SettingsView } from "./settings-sheet";
 import { MOD } from "../lib/utils";
 
 interface BarProps {

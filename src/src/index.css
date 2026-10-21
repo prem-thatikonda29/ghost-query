@@ -27,6 +27,8 @@
   --color-tooltip-foreground: var(--gq-popover);
   --color-field: var(--gq-field);
   --color-code: var(--gq-code);
+  --color-sheet: var(--gq-sheet);
+  --color-success: var(--gq-success);
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 0.875rem;
 }
@@ -42,6 +44,8 @@
   --gq-destructive: #d70015;
   --gq-field: rgba(255, 255, 255, 0.6);
   --gq-code: rgba(0, 0, 0, 0.04);
+  --gq-sheet: #f6f6f8;
+  --gq-success: #248a3d;
   color-scheme: light;
 }
 
@@ -57,6 +61,8 @@
     --gq-destructive: #ff453a;
     --gq-field: rgba(255, 255, 255, 0.04);
     --gq-code: rgba(0, 0, 0, 0.32);
+    --gq-sheet: #1e1e21;
+    --gq-success: #30d158;
     color-scheme: dark;
   }
 }
@@ -112,4 +118,18 @@ body {
   --tw-prose-code: var(--gq-foreground);
   --tw-prose-th-borders: var(--gq-border);
   --tw-prose-td-borders: var(--gq-border);
+}
+
+/* The settings sheet rises into place; skipped when the system asks for less motion. */
+@keyframes gq-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gq-sheet-in {
+    animation: gq-sheet-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
 }

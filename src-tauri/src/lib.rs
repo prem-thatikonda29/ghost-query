@@ -128,7 +128,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsView, String> {
 }
 
 /// Saves a provider's model (and URL for the custom provider), stores a newly typed
-/// key in the keychain, and makes the provider the active one.
+/// key in the keychain, and with `activate` makes the provider the one in use.
 #[tauri::command]
 fn save_provider(
     app: AppHandle,
@@ -137,6 +137,7 @@ fn save_provider(
     base_url: String,
     model: String,
     api_key: Option<String>,
+    activate: bool,
 ) -> Result<SettingsView, String> {
     let path = settings_path(&app)?;
     let mut settings = Settings::load(&path);
@@ -145,7 +146,9 @@ fn save_provider(
         state.keys.set(&id, key)?;
         settings.set_has_key(&id, true);
     }
-    settings.set_active(&id)?;
+    if activate {
+        settings.set_active(&id)?;
+    }
     settings.save(&path)?;
     Ok(settings_view(&settings))
 }
