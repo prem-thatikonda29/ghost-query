@@ -56,7 +56,7 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [ ] Code signing / notarization (needs Apple Developer and Windows certs; unsigned for now)
 
 ## Phase 5+: Later
-- [ ] FTS5 search over history
+- [ ] ~~FTS5 search over history~~ (dropped by the user; not wanted)
 - [ ] Tool calling + MCP (`rmcp`), approval prompt before any tool runs; evaluate `rig-core` behind the Provider trait
 - [ ] CI: macOS + `windows-latest` compile check, release on tag
 

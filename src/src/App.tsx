@@ -9,7 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
 import { SettingsPage, SettingsView } from "./components/ui/settings-page";
 import { Trash2, Copy, Check, Settings, Plus, RefreshCw } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "./components/markdown";
 
 interface ConversationSummary {
   id: string;
@@ -45,7 +45,7 @@ function App() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [activeLabel, setActiveLabel] = useState("");
-  const [hotkeyNotice, setHotkeyNotice] = useState("");
+  const [startupNotices, setStartupNotices] = useState<string[]>([]);
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
   const currentIdRef = useRef("");
   const threadRef = useRef<HTMLDivElement>(null);
@@ -129,8 +129,8 @@ function App() {
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    invoke<string | null>("get_hotkey_status")
-      .then((status) => setHotkeyNotice(status ?? ""))
+    invoke<string[]>("get_startup_notices")
+      .then(setStartupNotices)
       .catch(() => {});
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
@@ -234,44 +234,6 @@ function App() {
     }
   };
 
-  const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
-    const match = /language-(\w+)/.exec(className || "");
-    const codeText = String(children).replace(/\n$/, "");
-    const codeId = `code-${codeText.slice(0, 20).replace(/\s/g, "")}`;
-
-    if (!inline && match) {
-      return (
-        <div className="relative group">
-          <pre className="bg-black text-gray-100 p-4 rounded-lg overflow-x-auto text-base">
-            <code className={className} {...props}>
-              {children}
-            </code>
-          </pre>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={() => copyToClipboard(codeText, codeId)}
-          >
-            {copiedStates[codeId] ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
-        </div>
-      );
-    }
-
-    return (
-      <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-sm" {...props}>
-        {children}
-      </code>
-    );
-  };
-
-  const markdown = (text: string) => (
-    <div className="text-sm leading-relaxed prose prose-sm max-w-none dark:prose-invert">
-      <ReactMarkdown components={{ code: CodeBlock }}>{text}</ReactMarkdown>
-    </div>
-  );
-
   if (showSettings) {
     return (
       <SettingsPage
@@ -335,11 +297,11 @@ function App() {
           </div>
         </div>
 
-        {hotkeyNotice && (
-          <div className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
-            {hotkeyNotice}
+        {startupNotices.map((notice) => (
+          <div key={notice} className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
+            {notice}
           </div>
-        )}
+        ))}
 
         {/* Message thread */}
         <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto mb-4 space-y-3">
@@ -352,7 +314,7 @@ function App() {
               </div>
             ) : (
               <div key={msg.id} className="rounded-lg bg-muted/50 border p-4 group">
-                {markdown(msg.content)}
+                <Markdown text={msg.content} />
                 <div className="mt-2 flex items-center gap-1">
                   <Button
                     size="sm"
@@ -377,7 +339,7 @@ function App() {
                     </Button>
                   )}
                   {msg.status === "cancelled" && (
-                    <span className="text-xs text-muted-foreground">(stopped)</span>
+                    <span className="text-xs text-muted-foreground">(incomplete)</span>
                   )}
                 </div>
               </div>
@@ -395,7 +357,7 @@ function App() {
           {isLoading && (
             <div className="rounded-lg bg-muted/50 border p-4">
               {response ? (
-                markdown(response)
+                <Markdown text={response} />
               ) : (
                 <span className="text-sm text-muted-foreground">Thinking...</span>
               )}

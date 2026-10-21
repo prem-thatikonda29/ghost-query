@@ -20,6 +20,8 @@ Use Markdown for structure and fenced code blocks for code.";
 
 struct ChatState {
     db: Db,
+    /// One client for all requests, so connections and TLS sessions are reused.
+    client: Client,
     /// Token of the in-flight request, tagged with its id so a finished request
     /// never clears the token of a newer one.
     active: Mutex<Option<(u64, CancellationToken)>>,
@@ -28,7 +30,41 @@ struct ChatState {
 
 impl ChatState {
     fn new(db: Db) -> Self {
-        Self { db, active: Mutex::new(None), next_id: AtomicU64::new(0) }
+        // Only the connect phase is bounded; a streaming reply can legitimately take
+        // minutes, and the user ends it with Stop.
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { db, client, active: Mutex::new(None), next_id: AtomicU64::new(0) }
+    }
+}
+
+/// Registers the in-flight request's cancellation token and clears it on drop, however
+/// the request ends (including early returns), without clearing a newer request's token.
+struct ActiveRequest<'a> {
+    state: &'a ChatState,
+    id: u64,
+    token: CancellationToken,
+}
+
+impl<'a> ActiveRequest<'a> {
+    fn register(state: &'a ChatState) -> Self {
+        let token = CancellationToken::new();
+        let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Some((_, previous)) = state.active.lock().unwrap().replace((id, token.clone())) {
+            previous.cancel();
+        }
+        Self { state, id, token }
+    }
+}
+
+impl Drop for ActiveRequest<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.state.active.lock().unwrap();
+        if matches!(&*slot, Some((current, _)) if *current == self.id) {
+            *slot = None;
+        }
     }
 }
 
@@ -121,16 +157,26 @@ fn remove_api_key(app: AppHandle, id: String) -> Result<SettingsView, String> {
 /// Models offered by a provider. `base_url` is only honoured for the custom provider,
 /// so the list can be fetched before its URL is saved.
 #[tauri::command]
-async fn list_models(app: AppHandle, id: String, base_url: String) -> Result<Vec<ModelInfo>, String> {
+async fn list_models(
+    app: AppHandle,
+    state: State<'_, ChatState>,
+    id: String,
+    base_url: String,
+) -> Result<Vec<ModelInfo>, String> {
     let settings = Settings::load(&settings_path(&app)?);
     let config = settings.resolved(&id).ok_or_else(|| format!("Unknown provider: {id}"))?;
-    let url = if id == providers::CUSTOM_ID { base_url.trim().to_string() } else { config.base_url };
+    let url = if id == providers::CUSTOM_ID {
+        base_url.trim().trim_end_matches('/').to_string()
+    } else {
+        config.base_url.clone()
+    };
     if url.is_empty() {
         return Ok(Vec::new());
     }
-    // Only touch the keychain when a key is known to exist.
-    let key = if config.has_key { keystore::get(&id)? } else { None };
-    provider::fetch_models(&Client::new(), &url, key.as_deref()).await
+    // The saved key only ever goes to the saved URL: a URL still being typed in the form
+    // is queried without credentials. Also avoids touching the keychain needlessly.
+    let key = if config.has_key && url == config.base_url { keystore::get(&id)? } else { None };
+    provider::fetch_models(&state.client, &url, key.as_deref()).await
 }
 
 #[tauri::command]
@@ -169,6 +215,9 @@ async fn ask_ai_stream(
     app: AppHandle,
     state: State<'_, ChatState>,
 ) -> Result<(), String> {
+    // Registered first so Stop works during the setup below (keychain prompts, DB reads).
+    let request = ActiveRequest::register(&state);
+
     let active = match Settings::load(&settings_path(&app)?).active() {
         Ok(active) => active,
         Err(message) => {
@@ -196,30 +245,18 @@ async fn ask_ai_stream(
     };
     let messages = build_request_messages(SYSTEM_PROMPT, history, &prompt, HISTORY_TOKEN_BUDGET);
 
-    let token = CancellationToken::new();
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    if let Some((_, previous)) = state.active.lock().unwrap().replace((id, token.clone())) {
-        previous.cancel();
-    }
-
     let outcome = provider::stream_chat(
-        &Client::new(),
+        &state.client,
         &active,
         key.as_deref(),
         &messages,
-        &token,
+        &request.token,
         &|text| {
             let _ = app.emit("ai-response-chunk", text);
         },
     )
     .await;
-
-    {
-        let mut slot = state.active.lock().unwrap();
-        if matches!(&*slot, Some((current, _)) if *current == id) {
-            *slot = None;
-        }
-    }
+    drop(request);
 
     let save = |text: &str, status: &str| state.db.commit_exchange(&conversation_id, &prompt, text, status, regenerate);
     match outcome {
@@ -238,7 +275,9 @@ async fn ask_ai_stream(
         Outcome::Cancelled(partial) if partial.is_empty() => {
             let _ = app.emit("ai-response-cancelled", "");
         }
-        Outcome::Cancelled(partial) => match save(&partial, "cancelled") {
+        // Stopped by the user, or the connection dropped mid-reply: keep the partial text,
+        // marked incomplete.
+        Outcome::Cancelled(partial) | Outcome::Truncated(partial) => match save(&partial, "cancelled") {
             Ok(()) => {
                 let _ = app.emit("ai-response-cancelled", &partial);
             }
@@ -274,14 +313,41 @@ fn set_hide_from_capture(app: AppHandle, window: WebviewWindow, enabled: bool) -
     Ok(settings_view(&settings))
 }
 
-/// Set when the global shortcut could not be registered (for example another app
-/// owns it), so the UI can say why the hotkey does nothing.
-#[derive(Default)]
-struct HotkeyStatus(Mutex<Option<String>>);
+/// Opens a link from a model reply in the system browser. Replies are untrusted, so
+/// only http(s) links are accepted and the app window itself never navigates.
+#[tauri::command]
+fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only http(s) links can be opened".to_string());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Problems found at startup that the user should see (the shortcut could not be
+/// registered, the chat database could not be opened).
+struct StartupNotices(Vec<String>);
 
 #[tauri::command]
-fn get_hotkey_status(status: State<'_, HotkeyStatus>) -> Option<String> {
-    status.0.lock().unwrap().clone()
+fn get_startup_notices(notices: State<'_, StartupNotices>) -> Vec<String> {
+    notices.0.clone()
+}
+
+/// Opens the on-disk database; if that fails, falls back to a temporary in-memory one
+/// so the app still starts and can tell the user why chats will not be saved.
+fn open_database(app: &AppHandle) -> (Db, Option<String>) {
+    let opened = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no data directory: {e}"))
+        .and_then(|dir| Db::open(&dir.join("ghost-query.db")));
+    match opened {
+        Ok(db) => (db, None),
+        Err(e) => (
+            Db::open_in_memory().expect("in-memory database"),
+            Some(format!("Could not open the chat database ({e}). Chats will not be saved this session.")),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -314,7 +380,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(HotkeyStatus::default())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             ask_ai_stream,
             list_conversations,
@@ -325,7 +391,8 @@ pub fn run() {
             hide_window,
             quit_app,
             set_hide_from_capture,
-            get_hotkey_status,
+            get_startup_notices,
+            open_link,
             stop_streaming,
             get_settings,
             save_provider,
@@ -341,13 +408,17 @@ pub fn run() {
                 )?;
             }
 
-            let data_dir = app.path().app_data_dir()?;
-            app.manage(ChatState::new(Db::open(&data_dir.join("ghost-query.db"))?));
+            let mut notices = Vec::new();
+            let (db, db_notice) = open_database(app.handle());
+            notices.extend(db_notice);
+            app.manage(ChatState::new(db));
 
             let window = app.get_webview_window("main").unwrap();
 
             // The config protects the window by default; honour the user's choice.
-            let settings = Settings::load(&settings_path(app.handle())?);
+            let settings = settings_path(app.handle())
+                .map(|path| Settings::load(&path))
+                .unwrap_or_default();
             let _ = window.set_content_protected(settings.hide_from_capture);
 
             // No Dock icon.
@@ -356,14 +427,19 @@ pub fn run() {
                 let _ = app.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
-            // Ctrl+Shift+Space summons/dismisses the window. If it cannot be registered the
-            // app would be invisible and unreachable, so show the window and record why.
+            // Ctrl+Shift+Space summons/dismisses the window.
             if let Err(e) = app.global_shortcut().register("ctrl+shift+space") {
                 let message = format!("Ctrl+Shift+Space could not be registered ({e}). Another app may be using it.");
                 log::warn!("{message}");
-                *app.state::<HotkeyStatus>().0.lock().unwrap() = Some(message);
+                notices.push(message);
+            }
+
+            // With no Dock icon and a hidden window, a startup problem would otherwise be
+            // invisible, so show the window whenever there is something to tell the user.
+            if !notices.is_empty() {
                 window::show(&window);
             }
+            app.manage(StartupNotices(notices));
 
             Ok(())
         })

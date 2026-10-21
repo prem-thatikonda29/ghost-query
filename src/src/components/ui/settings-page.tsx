@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "./button";
@@ -47,11 +47,16 @@ export function SettingsPage({ onBack, onChanged }: SettingsPageProps) {
 
   const provider = view?.providers.find((p) => p.id === selectedId);
 
+  // Only the newest request may update the list, so a slow answer for a provider the
+  // user has already left cannot fill in the wrong suggestions.
+  const modelsRequest = useRef(0);
   const loadModels = async (id: string, url: string) => {
+    const seq = ++modelsRequest.current;
     try {
-      setModels(await invoke<ModelInfo[]>("list_models", { id, baseUrl: url }));
+      const list = await invoke<ModelInfo[]>("list_models", { id, baseUrl: url });
+      if (seq === modelsRequest.current) setModels(list);
     } catch {
-      setModels([]);
+      if (seq === modelsRequest.current) setModels([]);
     }
   };
 

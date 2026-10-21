@@ -5,6 +5,33 @@ use std::path::Path;
 
 const DEFAULT_ACTIVE: &str = "openrouter";
 
+/// Host part of an http(s) URL, lowercased, without userinfo or port.
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        stripped.split(']').next()?
+    } else {
+        authority.split(':').next()?
+    };
+    (!host.is_empty()).then(|| host.to_lowercase())
+}
+
+/// Loopback, private-network and `.local` hosts, where plain http does not cross the
+/// public internet.
+fn is_local_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        Err(_) => false,
+    }
+}
+
 /// Per-provider, non-secret settings. API keys live in the OS keychain, never here.
 /// `has_key` is only a flag so the UI never has to touch the keychain just to render.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -99,6 +126,10 @@ impl Settings {
             if !(url.starts_with("https://") || url.starts_with("http://")) {
                 return Err("Base URL must start with http:// or https://".to_string());
             }
+            // The API key travels with every request, so keep it off plaintext public links.
+            if url.starts_with("http://") && !host_of(url).is_some_and(|h| is_local_host(&h)) {
+                return Err("Plain http:// is only allowed for local addresses (localhost, private networks); use https:// for anything else.".to_string());
+            }
             entry.base_url = url.to_string();
         }
         Ok(())
@@ -175,6 +206,40 @@ mod tests {
         let a = s.active().unwrap();
         assert_eq!(a.base_url, "https://agent.example/v1");
         assert!(!a.needs_key);
+    }
+
+    #[test]
+    fn host_parsing_handles_ports_userinfo_and_ipv6() {
+        assert_eq!(host_of("http://Localhost:11434/v1").as_deref(), Some("localhost"));
+        assert_eq!(host_of("https://user:pw@example.com:8443/x?y#z").as_deref(), Some("example.com"));
+        assert_eq!(host_of("http://[::1]:8080/v1").as_deref(), Some("::1"));
+        assert_eq!(host_of("http:///v1"), None);
+    }
+
+    #[test]
+    fn plain_http_is_limited_to_local_hosts() {
+        let mut s = Settings::default();
+        for ok in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://192.168.1.20:8080/v1",
+            "http://10.0.0.5/v1",
+            "http://172.16.3.4/v1",
+            "http://[::1]:8080/v1",
+            "http://my-box.local:9000/v1",
+            "https://api.example.com/v1",
+        ] {
+            assert!(s.update_provider("custom", ok, "m").is_ok(), "{ok} should be allowed");
+        }
+        for bad in [
+            "http://api.example.com/v1",
+            "http://8.8.8.8/v1",
+            "http://172.32.0.1/v1",
+            "http://localhost.evil.com/v1",
+            "http://user@evil.com:80/v1",
+        ] {
+            assert!(s.update_provider("custom", bad, "m").is_err(), "{bad} should be rejected");
+        }
     }
 
     #[test]

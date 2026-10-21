@@ -88,7 +88,7 @@ impl Db {
         Self::init(Connection::open(path).map_err(db_err)?)
     }
 
-    #[cfg(test)]
+    /// Used as a fallback when the on-disk database cannot be opened (and in tests).
     pub fn open_in_memory() -> Result<Self, String> {
         Self::init(Connection::open_in_memory().map_err(db_err)?)
     }

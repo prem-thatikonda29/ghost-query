@@ -8,18 +8,29 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 pub enum Outcome {
     Done(String),
     /// Carries whatever was streamed before the user pressed Stop.
     Cancelled(String),
+    /// The connection ended before the provider signalled completion (no `[DONE]`, no
+    /// finish_reason); carries the partial reply.
+    Truncated(String),
     Failed(String),
 }
+
+/// How long to wait for a model list; chat streams are governed by Stop instead.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(20);
+/// Plain (non-SSE) responses larger than this are not interpreted.
+const MAX_PLAIN_BODY: usize = 1 << 20;
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Delta(String),
+    /// The provider reported a finish_reason (stop, length, ...) other than an error.
+    Finished,
     Done,
     Error(String),
     Ignore,
@@ -57,27 +68,43 @@ fn describe_error(error: &Value) -> String {
 
 /// Interprets one SSE `data:` payload. Mid-stream failures arrive as a chunk with a
 /// top-level `error` object and `finish_reason: "error"` (HTTP status is already 200).
-pub fn parse_event(data: &str) -> Event {
+/// A chunk can carry both text and a finish_reason, so this returns every event in it.
+pub fn parse_events(data: &str) -> Vec<Event> {
     let data = data.trim();
     if data == "[DONE]" {
-        return Event::Done;
+        return vec![Event::Done];
     }
     let Ok(value) = serde_json::from_str::<Value>(data) else {
-        return Event::Ignore;
+        return vec![Event::Ignore];
     };
     if let Some(error) = value.get("error") {
-        return Event::Error(describe_error(error));
+        return vec![Event::Error(describe_error(error))];
     }
     let choice = &value["choices"][0];
+    let mut events = Vec::new();
     if let Some(content) = choice["delta"]["content"].as_str() {
         if !content.is_empty() {
-            return Event::Delta(content.to_string());
+            events.push(Event::Delta(content.to_string()));
         }
     }
-    if choice["finish_reason"] == "error" {
-        return Event::Error("The model reported an error.".to_string());
+    match choice["finish_reason"].as_str() {
+        Some("error") => events.push(Event::Error("The model reported an error.".to_string())),
+        Some(_) => events.push(Event::Finished),
+        None => {}
     }
-    Event::Ignore
+    events
+}
+
+/// Some providers and gateways ignore `stream: true` and answer 200 with one plain
+/// chat-completion (or error) JSON body. Returns the reply text or the error message,
+/// or `None` if the body is neither.
+pub fn parse_plain_body(body: &[u8]) -> Option<Result<String, String>> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    if let Some(error) = value.get("error") {
+        return Some(Err(describe_error(error)));
+    }
+    let content = value["choices"][0]["message"]["content"].as_str()?;
+    (!content.is_empty()).then(|| Ok(content.to_string()))
 }
 
 /// Readable message for a non-2xx response received before streaming started.
@@ -137,7 +164,9 @@ pub fn parse_models(catalog: &Value) -> Vec<ModelInfo> {
 }
 
 pub async fn fetch_models(client: &Client, base_url: &str, api_key: Option<&str>) -> Result<Vec<ModelInfo>, String> {
-    let mut request = client.get(format!("{}/models", base_url.trim_end_matches('/')));
+    let mut request = client
+        .get(format!("{}/models", base_url.trim_end_matches('/')))
+        .timeout(MODELS_TIMEOUT);
     if let Some(key) = api_key {
         request = request.bearer_auth(key);
     }
@@ -190,6 +219,10 @@ pub async fn stream_chat(
 
     let mut stream = response.bytes_stream();
     let mut parser = SseParser::new();
+    let mut finished = false;
+    let mut saw_event = false;
+    // Kept only until the first SSE event, in case the body turns out to be plain JSON.
+    let mut raw: Vec<u8> = Vec::new();
 
     loop {
         let next = tokio::select! {
@@ -197,23 +230,44 @@ pub async fn stream_chat(
             next = stream.next() => next,
         };
         let Some(chunk) = next else {
-            // Closed without [DONE]; keep what we have.
-            return Outcome::Done(full);
+            if !saw_event {
+                match parse_plain_body(&raw) {
+                    Some(Ok(text)) => {
+                        on_chunk(&text);
+                        return Outcome::Done(text);
+                    }
+                    Some(Err(message)) => return Outcome::Failed(message),
+                    None => {}
+                }
+            }
+            // Closed without [DONE]: only a finish_reason makes the reply complete.
+            return if finished || full.is_empty() {
+                Outcome::Done(full)
+            } else {
+                Outcome::Truncated(full)
+            };
         };
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => return Outcome::Failed(format!("Stream error: {e}")),
         };
+        if !saw_event && raw.len() < MAX_PLAIN_BODY {
+            raw.extend_from_slice(&chunk);
+        }
 
         for data in parser.push(&chunk) {
-            match parse_event(&data) {
-                Event::Delta(text) => {
-                    full.push_str(&text);
-                    on_chunk(&text);
+            saw_event = true;
+            for event in parse_events(&data) {
+                match event {
+                    Event::Delta(text) => {
+                        full.push_str(&text);
+                        on_chunk(&text);
+                    }
+                    Event::Finished => finished = true,
+                    Event::Done => return Outcome::Done(full),
+                    Event::Error(message) => return Outcome::Failed(message),
+                    Event::Ignore => {}
                 }
-                Event::Done => return Outcome::Done(full),
-                Event::Error(message) => return Outcome::Failed(message),
-                Event::Ignore => {}
             }
         }
     }
@@ -246,22 +300,28 @@ mod tests {
 
     #[test]
     fn parses_stream_events() {
-        assert_eq!(parse_event("[DONE]"), Event::Done);
+        assert_eq!(parse_events("[DONE]"), vec![Event::Done]);
         assert_eq!(
-            parse_event(r#"{"choices":[{"delta":{"content":"Hi"}}]}"#),
-            Event::Delta("Hi".into())
+            parse_events(r#"{"choices":[{"delta":{"content":"Hi"}}]}"#),
+            vec![Event::Delta("Hi".into())]
         );
-        assert_eq!(parse_event(r#"{"choices":[{"delta":{"content":""}}]}"#), Event::Ignore);
-        assert_eq!(parse_event(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#), Event::Ignore);
-        assert_eq!(parse_event("not json"), Event::Ignore);
+        assert!(parse_events(r#"{"choices":[{"delta":{"content":""}}]}"#).is_empty());
+        assert!(parse_events(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#).is_empty());
+        assert_eq!(parse_events("not json"), vec![Event::Ignore]);
+        // Text and the finish marker can arrive in the same chunk.
+        assert_eq!(
+            parse_events(r#"{"choices":[{"delta":{"content":"end"},"finish_reason":"stop"}]}"#),
+            vec![Event::Delta("end".into()), Event::Finished]
+        );
+        assert_eq!(parse_events(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#), vec![Event::Finished]);
     }
 
     #[test]
     fn parses_mid_stream_error_chunk() {
         let chunk = r#"{"id":"gen-1","error":{"code":429,"message":"Rate limit exceeded","metadata":{"error_type":"rate_limit_exceeded"}},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}"#;
         assert_eq!(
-            parse_event(chunk),
-            Event::Error("Rate limit exceeded (rate_limit_exceeded)".into())
+            parse_events(chunk),
+            vec![Event::Error("Rate limit exceeded (rate_limit_exceeded)".into())]
         );
     }
 
@@ -388,5 +448,72 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome, Outcome::Failed(_)));
+    }
+
+    #[test]
+    fn plain_bodies_are_recognised() {
+        assert_eq!(
+            parse_plain_body(br#"{"choices":[{"message":{"role":"assistant","content":"Hi there"}}]}"#),
+            Some(Ok("Hi there".to_string()))
+        );
+        assert_eq!(
+            parse_plain_body(br#"{"error":{"message":"bad model","code":400}}"#),
+            Some(Err("bad model".to_string()))
+        );
+        assert_eq!(parse_plain_body(b""), None);
+        assert_eq!(parse_plain_body(b"<html>"), None);
+        assert_eq!(parse_plain_body(br#"{"choices":[{"message":{"content":""}}]}"#), None);
+    }
+
+    /// Serves `body` as one plain response with the given content type, then closes.
+    async fn plain_server(content_type: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn a_plain_json_reply_at_200_is_used_instead_of_discarded() {
+        let base = plain_server("application/json", r#"{"choices":[{"message":{"content":"All at once"}}]}"#).await;
+        let chunks = std::sync::Mutex::new(Vec::<String>::new());
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), &|t| {
+            chunks.lock().unwrap().push(t.to_string())
+        })
+        .await;
+        assert!(matches!(outcome, Outcome::Done(ref t) if t == "All at once"));
+        assert_eq!(*chunks.lock().unwrap(), vec!["All at once"]);
+    }
+
+    #[tokio::test]
+    async fn a_plain_json_error_at_200_is_reported() {
+        let base = plain_server("application/json", r#"{"error":{"message":"model not loaded","code":500}}"#).await;
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), &|_| {}).await;
+        assert!(matches!(outcome, Outcome::Failed(ref e) if e == "model not loaded"));
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_off_mid_reply_is_not_reported_as_complete() {
+        let events = "data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}\n\n";
+        let (base, _rx) = fake_server(events, false).await;
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), &|_| {}).await;
+        assert!(matches!(outcome, Outcome::Truncated(ref t) if t == "half an ans"));
+    }
+
+    #[tokio::test]
+    async fn a_finish_reason_without_done_still_counts_as_complete() {
+        let events = "data: {\"choices\":[{\"delta\":{\"content\":\"whole\"},\"finish_reason\":\"stop\"}]}\n\n";
+        let (base, _rx) = fake_server(events, false).await;
+        let outcome = stream_chat(&Client::new(), &settings(base), None, &[msg("user", "hi")], &CancellationToken::new(), &|_| {}).await;
+        assert!(matches!(outcome, Outcome::Done(ref t) if t == "whole"));
     }
 }
