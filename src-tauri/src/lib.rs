@@ -294,7 +294,7 @@ async fn ask_ai_stream(
 
 #[tauri::command]
 fn hide_window(window: WebviewWindow) {
-    let _ = window.hide();
+    window::hide(&window);
 }
 
 /// With no Dock icon or taskbar entry, the app needs its own way to quit.
@@ -362,7 +362,11 @@ fn stop_streaming(state: State<'_, ChatState>) -> Result<(), String> {
 pub fn run() {
     let debounce = std::sync::Arc::new(Mutex::new(Debounce::new()));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -421,10 +425,14 @@ pub fn run() {
                 .unwrap_or_default();
             let _ = window.set_content_protected(settings.hide_from_capture);
 
-            // No Dock icon.
+            // No Dock icon, and a panel that can float over fullscreen apps.
             #[cfg(target_os = "macos")]
             {
                 let _ = app.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                if let Err(e) = window::convert_to_panel(&window) {
+                    log::warn!("could not convert the window to a panel: {e}");
+                    notices.push(format!("The window could not be set up to float over fullscreen apps ({e})."));
+                }
             }
 
             // Ctrl+Shift+Space summons/dismisses the window.
@@ -438,6 +446,22 @@ pub fn run() {
             // invisible, so show the window whenever there is something to tell the user.
             if !notices.is_empty() {
                 window::show(&window);
+            }
+            // GHOST_QUERY_SHOW_ON_START is a development aid: a few seconds after launch (like
+            // a real shortcut press, not during setup) it shows the window so scripts can
+            // inspect it without needing the shortcut.
+            if cfg!(debug_assertions) && std::env::var_os("GHOST_QUERY_SHOW_ON_START").is_some() {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    let inner = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(main) = inner.get_webview_window("main") {
+                            window::show(&main);
+                            log::info!("dev show; visible now: {}", window::is_visible(&main));
+                        }
+                    });
+                });
             }
             app.manage(StartupNotices(notices));
 

@@ -44,7 +44,8 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [x] `tauri-plugin-global-shortcut` (Ctrl+Shift+Space, debounced) replaces the hand-rolled hotkey thread and the `global-hotkey` crate
 - [x] No window-style hacks; Windows needs no custom code (Tauri handles skipTaskbar/content protection)
 - [x] Frameless extras: draggable header (`core:window:allow-start-dragging`), Esc hides, Ctrl/Cmd+Q and a Settings button quit, hotkey-registration failure shows the window plus a notice
-- [ ] User to test: hotkey, Esc, drag, quit, behaviour over fullscreen apps (plain Tauri windows may not float over fullscreen Spaces; `tauri-nspanel` is the fallback), capture hiding in a real screen share
+- [x] macOS: main window converted to a non-activating NSPanel (`tauri-nspanel`), status level, all Spaces + fullscreen-auxiliary; show/hide routed through the panel. Verified from macOS: window level 25, capture sharing state "none"; NOT verified: that it is visible and floats over a fullscreen app (needs a manual test)
+- [ ] User to test: hotkey, Esc, drag, quit, floating over a fullscreen app, capture hiding in a real screen share
 - [ ] Windows: not built or tested (compile check planned in CI phase)
 
 ## Phase 4: Pipeline
