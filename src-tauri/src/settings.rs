@@ -1,49 +1,117 @@
+use crate::providers::{preset, CUSTOM_ID};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
-pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-/// A specific free chat model. Not `openrouter/free`: that router picks a free model at
-/// random, including non-chat ones such as NVIDIA's content-safety classifier.
-pub const DEFAULT_MODEL: &str = "google/gemma-4-31b-it:free";
+const DEFAULT_ACTIVE: &str = "openrouter";
 
-/// Non-secret provider settings. The API key lives in the OS keychain, never here.
+/// Per-provider, non-secret settings. API keys live in the OS keychain, never here.
+/// `has_key` is only a flag so the UI never has to touch the keychain just to render.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// Only used by the custom provider; presets always use their built-in URL.
+    pub base_url: String,
+    pub model: String,
+    pub has_key: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// Up to and including `/v1`; `/chat/completions` is appended per request.
-    pub base_url: String,
-    pub model: String,
+    pub active: String,
+    pub providers: BTreeMap<String, ProviderConfig>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            model: DEFAULT_MODEL.to_string(),
-        }
+        Self { active: DEFAULT_ACTIVE.to_string(), providers: BTreeMap::new() }
     }
 }
 
+/// What a request needs, fully resolved.
+#[derive(Debug, Clone)]
+pub struct Active {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub model: String,
+    pub needs_key: bool,
+}
+
 impl Settings {
-    pub fn validate(&self) -> Result<(), String> {
-        let url = self.base_url.trim();
-        if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err("Base URL must start with http:// or https://".to_string());
+    /// Stored values layered over the preset's defaults. `None` for unknown ids.
+    pub fn resolved(&self, id: &str) -> Option<ProviderConfig> {
+        let preset = preset(id)?;
+        let stored = self.providers.get(id).cloned().unwrap_or_default();
+        Some(ProviderConfig {
+            base_url: if id == CUSTOM_ID {
+                stored.base_url
+            } else {
+                preset.base_url.to_string()
+            },
+            model: if stored.model.is_empty() {
+                preset.default_model.to_string()
+            } else {
+                stored.model
+            },
+            has_key: stored.has_key,
+        })
+    }
+
+    pub fn active(&self) -> Result<Active, String> {
+        let preset = preset(&self.active).ok_or_else(|| format!("Unknown provider: {}", self.active))?;
+        let config = self.resolved(&self.active).expect("preset exists");
+        if config.base_url.is_empty() {
+            return Err(format!("{}: set a base URL in Settings.", preset.name));
         }
-        if self.model.trim().is_empty() {
+        if config.model.trim().is_empty() {
+            return Err(format!("{}: choose a model in Settings.", preset.name));
+        }
+        Ok(Active {
+            id: preset.id.to_string(),
+            name: preset.name.to_string(),
+            base_url: config.base_url,
+            model: config.model,
+            needs_key: preset.needs_key,
+        })
+    }
+
+    /// Save a provider's model (and, for the custom provider, its base URL).
+    pub fn update_provider(&mut self, id: &str, base_url: &str, model: &str) -> Result<(), String> {
+        if preset(id).is_none() {
+            return Err(format!("Unknown provider: {id}"));
+        }
+        let model = model.trim();
+        if model.is_empty() {
             return Err("Model ID must not be empty".to_string());
+        }
+        let entry = self.providers.entry(id.to_string()).or_default();
+        entry.model = model.to_string();
+        if id == CUSTOM_ID {
+            let url = base_url.trim().trim_end_matches('/');
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err("Base URL must start with http:// or https://".to_string());
+            }
+            entry.base_url = url.to_string();
         }
         Ok(())
     }
 
-    pub fn normalized(&self) -> Self {
-        Self {
-            base_url: self.base_url.trim().trim_end_matches('/').to_string(),
-            model: self.model.trim().to_string(),
-        }
+    pub fn set_has_key(&mut self, id: &str, has_key: bool) {
+        self.providers.entry(id.to_string()).or_default().has_key = has_key;
     }
 
-    /// Missing or unreadable files fall back to defaults.
+    pub fn set_active(&mut self, id: &str) -> Result<(), String> {
+        if preset(id).is_none() {
+            return Err(format!("Unknown provider: {id}"));
+        }
+        self.active = id.to_string();
+        Ok(())
+    }
+
+    /// Missing or unreadable files (including the old single-provider format) fall
+    /// back to defaults.
     pub fn load(path: &Path) -> Self {
         std::fs::read_to_string(path)
             .ok()
@@ -69,30 +137,70 @@ mod tests {
     }
 
     #[test]
-    fn defaults_point_at_openrouter() {
-        let s = Settings::default();
-        assert_eq!(s.base_url, "https://openrouter.ai/api/v1");
-        assert!(s.validate().is_ok());
+    fn defaults_to_openrouter_with_a_chat_model() {
+        let a = Settings::default().active().unwrap();
+        assert_eq!(a.id, "openrouter");
+        assert_eq!(a.base_url, "https://openrouter.ai/api/v1");
+        assert!(a.model.ends_with(":free") && a.needs_key);
     }
 
     #[test]
-    fn rejects_bad_url_and_empty_model() {
-        let bad_url = Settings { base_url: "ftp://x".into(), model: "m".into() };
-        assert!(bad_url.validate().is_err());
-        let no_model = Settings { base_url: "http://localhost:11434/v1".into(), model: "  ".into() };
-        assert!(no_model.validate().is_err());
+    fn presets_without_a_default_model_require_choosing_one() {
+        let mut s = Settings::default();
+        s.set_active("groq").unwrap();
+        assert!(s.active().unwrap_err().contains("choose a model"));
+        s.update_provider("groq", "", "llama-x").unwrap();
+        let a = s.active().unwrap();
+        assert_eq!((a.base_url.as_str(), a.model.as_str()), ("https://api.groq.com/openai/v1", "llama-x"));
     }
 
     #[test]
-    fn normalizes_whitespace_and_trailing_slash() {
-        let s = Settings { base_url: " https://x.test/v1/ ".into(), model: " m ".into() };
-        assert_eq!(s.normalized(), Settings { base_url: "https://x.test/v1".into(), model: "m".into() });
+    fn preset_urls_cannot_be_overridden() {
+        let mut s = Settings::default();
+        s.update_provider("openai", "https://evil.example/v1", "m").unwrap();
+        assert_eq!(s.resolved("openai").unwrap().base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn custom_provider_takes_and_normalizes_its_url() {
+        let mut s = Settings::default();
+        s.update_provider("custom", " https://agent.example/v1/ ", "m").unwrap();
+        s.set_active("custom").unwrap();
+        let a = s.active().unwrap();
+        assert_eq!(a.base_url, "https://agent.example/v1");
+        assert!(!a.needs_key);
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        let mut s = Settings::default();
+        assert!(s.update_provider("custom", "ftp://x", "m").is_err());
+        assert!(s.update_provider("custom", "http://x", "  ").is_err());
+        assert!(s.update_provider("nope", "", "m").is_err());
+        assert!(s.set_active("nope").is_err());
+    }
+
+    #[test]
+    fn custom_without_url_is_an_actionable_error() {
+        let mut s = Settings::default();
+        s.set_active("custom").unwrap();
+        assert!(s.active().unwrap_err().contains("base URL"));
+    }
+
+    #[test]
+    fn has_key_flag_is_tracked_per_provider() {
+        let mut s = Settings::default();
+        s.set_has_key("groq", true);
+        assert!(s.resolved("groq").unwrap().has_key);
+        assert!(!s.resolved("openai").unwrap().has_key);
     }
 
     #[test]
     fn save_then_load_roundtrips_and_missing_file_gives_defaults() {
         let path = temp_path("settings.json");
-        let s = Settings { base_url: "http://localhost:11434/v1".into(), model: "llama3".into() };
+        let mut s = Settings::default();
+        s.update_provider("groq", "", "m").unwrap();
+        s.set_active("groq").unwrap();
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
         std::fs::remove_file(&path).unwrap();
@@ -100,8 +208,10 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_gives_defaults() {
-        let path = temp_path("corrupt.json");
+    fn old_single_provider_or_corrupt_files_give_defaults() {
+        let path = temp_path("old.json");
+        std::fs::write(&path, r#"{"base_url":"https://openrouter.ai/api/v1","model":"x"}"#).unwrap();
+        assert_eq!(Settings::load(&path), Settings::default());
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
         std::fs::remove_file(&path).unwrap();

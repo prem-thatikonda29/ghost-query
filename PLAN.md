@@ -23,7 +23,9 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 
 - [x] Structured `[system, ...history, user]` messages instead of pasted text (partial Phase 2 history work)
 - [x] Removed dead frontend formatters (they flattened all Markdown); README rewritten
-- [ ] Live test with a real key (needs user)
+- [x] Live test with a real key (user confirmed working with OpenRouter)
+- [x] Separate Settings page with Back button; per-provider keys + presets (OpenAI, Claude, Gemini, Groq, NVIDIA, Mistral, Together, DeepSeek, Ollama) and a Custom URL+key slot
+- [ ] User to test multi-provider Settings, then start history phase
 
 ## Phase 2: Proper history (SQLite)
 - [ ] SQLite (`rusqlite`) in the app data dir; tables `conversations`, `messages` (role, content, status, timestamps)

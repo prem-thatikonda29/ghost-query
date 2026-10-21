@@ -4,8 +4,8 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 
 ## Features
 
-- **Bring your own key** — Works with OpenRouter (including its free `:free` models), or any OpenAI-compatible endpoint such as Ollama, Groq or OpenAI. Set the base URL, model and key in the in-app Settings.
-- **Key stays in the keychain** — Stored in the macOS Keychain / Windows Credential Manager. The UI can save or remove it but never reads it back, and it is never written to disk by the app.
+- **Bring your own key, any provider** — A separate Settings page lets you pick OpenRouter (including free `:free` models), OpenAI, Claude (Anthropic), Google Gemini, Groq, NVIDIA NIM, Mistral, Together AI, DeepSeek or local Ollama; the base URL is set for you. Choose "Custom" to enter your own base URL and key for any other OpenAI-compatible endpoint (AgentRouter, a self-hosted gateway, ...). Each provider keeps its own key and model.
+- **Keys stay in the keychain** — One entry per provider in the macOS Keychain / Windows Credential Manager. The UI can save or remove a key but never reads it back, and the app never writes it to disk.
 - **Streaming responses** — Real-time token-by-token output, with a Stop button that cancels the request.
 - **Global hotkey** — Ctrl+Shift+Space shows or hides the window; no Dock icon on macOS.
 - **Conversation history** — Browse, copy, or clear the current conversation.
@@ -23,14 +23,15 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 ├── src/                  # React frontend (Vite)
 │   └── src/
 │       ├── App.tsx       # Main chat UI
-│       ├── components/   # UI primitives (chat input, settings panel, etc.)
+│       ├── components/   # UI primitives (chat input, settings page, etc.)
 │       └── lib/          # Utilities
 ├── src-tauri/            # Tauri/Rust backend
 │   └── src/
 │       ├── lib.rs        # App setup, commands, hotkey
 │       ├── provider.rs   # OpenAI-compatible streaming client
-│       ├── keystore.rs   # API key in the OS keychain
-│       ├── settings.rs   # Base URL / model (non-secret) settings
+│       ├── providers.rs  # Built-in provider presets
+│       ├── keystore.rs   # Per-provider API keys in the OS keychain
+│       ├── settings.rs   # Active provider, models, custom URL (non-secret)
 │       ├── conversation.rs
 │       └── sse.rs        # Server-sent-events parser
 ├── PLAN.md               # Phase checklist
@@ -51,7 +52,7 @@ npm --prefix src install
 npm --prefix src run tauri dev
 ```
 
-On first launch the Settings panel opens: paste your API key, pick a model (the default is `google/gemma-4-31b-it:free`), and save.
+On first launch the Settings page opens: pick a provider, paste its API key, choose a model (OpenRouter defaults to `google/gemma-4-31b-it:free`), and press "Save and use". Use "Back to chat" to return.
 
 ## Tests
 

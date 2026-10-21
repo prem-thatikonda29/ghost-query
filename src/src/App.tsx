@@ -7,7 +7,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
-import { SettingsPanel } from "./components/ui/settings-panel";
+import { SettingsPage, SettingsView } from "./components/ui/settings-page";
 import { Trash2, MessageSquare, Copy, Check, Settings } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -28,7 +28,7 @@ function App() {
   >([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [modelName, setModelName] = useState("");
+  const [activeLabel, setActiveLabel] = useState("");
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>(
     {}
   );
@@ -81,11 +81,12 @@ function App() {
   // Load conversation history and provider settings on mount
   useEffect(() => {
     loadConversationHistory();
-    invoke<{ model: string; has_key: boolean }>("get_settings")
+    invoke<SettingsView>("get_settings")
       .then((view) => {
-        setModelName(view.model);
-        // First run: no key yet, so open settings straight away.
-        if (!view.has_key) setShowSettings(true);
+        const active = view.providers.find((p) => p.id === view.active);
+        setActiveLabel(active ? `${active.name} · ${active.model || "no model"}` : "");
+        // First run: the active provider needs a key, so open settings straight away.
+        if (active && active.needs_key && !active.has_key) setShowSettings(true);
       })
       .catch((err) => console.error("Failed to load settings:", err));
   }, []);
@@ -213,6 +214,18 @@ function App() {
     );
   };
 
+  if (showSettings) {
+    return (
+      <SettingsPage
+        onBack={() => setShowSettings(false)}
+        onChanged={(view) => {
+          const active = view.providers.find((p) => p.id === view.active);
+          setActiveLabel(active ? `${active.name} · ${active.model || "no model"}` : "");
+        }}
+      />
+    );
+  }
+
   return (
     <div className="w-full flex flex-col h-screen p-4">
       <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
@@ -230,11 +243,11 @@ function App() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowSettings(!showSettings)}
+              onClick={() => setShowSettings(true)}
               title="Provider settings"
             >
               <Settings className="h-4 w-4 mr-1" />
-              {modelName || "Settings"}
+              {activeLabel || "Settings"}
             </Button>
             {conversationHistory.length > 0 && (
               <Button
@@ -254,13 +267,6 @@ function App() {
             )}
           </div>
         </div>
-
-        {showSettings && (
-          <SettingsPanel
-            onClose={() => setShowSettings(false)}
-            onSaved={(view) => setModelName(view.model)}
-          />
-        )}
 
         {/* Conversation History */}
         {showHistory && conversationHistory.length > 0 && (

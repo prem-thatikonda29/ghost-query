@@ -1,6 +1,7 @@
 mod conversation;
 mod keystore;
 mod provider;
+mod providers;
 mod settings;
 mod sse;
 
@@ -32,10 +33,21 @@ struct ChatState {
 }
 
 #[derive(Serialize)]
-struct SettingsView {
+struct ProviderView {
+    id: String,
+    name: String,
     base_url: String,
-    model: String,
+    url_editable: bool,
+    needs_key: bool,
     has_key: bool,
+    model: String,
+    key_hint: String,
+}
+
+#[derive(Serialize)]
+struct SettingsView {
+    active: String,
+    providers: Vec<ProviderView>,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -45,52 +57,94 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("No config directory: {e}"))
 }
 
+fn settings_view(settings: &Settings) -> SettingsView {
+    SettingsView {
+        active: settings.active.clone(),
+        providers: providers::PRESETS
+            .iter()
+            .map(|p| {
+                let config = settings.resolved(p.id).expect("preset exists");
+                ProviderView {
+                    id: p.id.to_string(),
+                    name: p.name.to_string(),
+                    base_url: config.base_url,
+                    url_editable: p.id == providers::CUSTOM_ID,
+                    needs_key: p.needs_key,
+                    has_key: config.has_key,
+                    model: config.model,
+                    key_hint: p.key_hint.to_string(),
+                }
+            })
+            .collect(),
+    }
+}
+
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<SettingsView, String> {
-    let settings = Settings::load(&settings_path(&app)?);
-    Ok(SettingsView {
-        base_url: settings.base_url,
-        model: settings.model,
-        has_key: keystore::get()?.is_some(),
-    })
+    Ok(settings_view(&Settings::load(&settings_path(&app)?)))
 }
 
+/// Saves a provider's model (and URL for the custom provider), stores a newly typed
+/// key in the keychain, and makes the provider the active one.
 #[tauri::command]
-fn save_settings(app: AppHandle, base_url: String, model: String) -> Result<(), String> {
-    let settings = Settings { base_url, model }.normalized();
-    settings.validate()?;
-    settings.save(&settings_path(&app)?)
-}
-
-#[tauri::command]
-fn set_api_key(key: String) -> Result<(), String> {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("API key must not be empty".to_string());
+fn save_provider(
+    app: AppHandle,
+    id: String,
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+) -> Result<SettingsView, String> {
+    let path = settings_path(&app)?;
+    let mut settings = Settings::load(&path);
+    settings.update_provider(&id, &base_url, &model)?;
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        keystore::set(&id, key)?;
+        settings.set_has_key(&id, true);
     }
-    keystore::set(key)
+    settings.set_active(&id)?;
+    settings.save(&path)?;
+    Ok(settings_view(&settings))
 }
 
 #[tauri::command]
-fn clear_api_key() -> Result<(), String> {
-    keystore::clear()
+fn remove_api_key(app: AppHandle, id: String) -> Result<SettingsView, String> {
+    let path = settings_path(&app)?;
+    let mut settings = Settings::load(&path);
+    keystore::clear(&id)?;
+    settings.set_has_key(&id, false);
+    settings.save(&path)?;
+    Ok(settings_view(&settings))
 }
 
+/// Models offered by a provider. `base_url` is only honoured for the custom provider,
+/// so the list can be fetched before its URL is saved.
 #[tauri::command]
-async fn list_models(app: AppHandle) -> Result<Vec<ModelInfo>, String> {
-    let settings = Settings::load(&settings_path(&app)?).normalized();
-    let key = keystore::get()?;
-    provider::fetch_models(&Client::new(), &settings.base_url, key.as_deref()).await
+async fn list_models(app: AppHandle, id: String, base_url: String) -> Result<Vec<ModelInfo>, String> {
+    let settings = Settings::load(&settings_path(&app)?);
+    let config = settings.resolved(&id).ok_or_else(|| format!("Unknown provider: {id}"))?;
+    let url = if id == providers::CUSTOM_ID { base_url.trim().to_string() } else { config.base_url };
+    if url.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Only touch the keychain when a key is known to exist.
+    let key = if config.has_key { keystore::get(&id)? } else { None };
+    provider::fetch_models(&Client::new(), &url, key.as_deref()).await
 }
 
 #[tauri::command]
 async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatState>) -> Result<(), String> {
-    let settings = Settings::load(&settings_path(&app)?).normalized();
-    let key = keystore::get()?;
-    if key.is_none() && provider::is_openrouter(&settings.base_url) {
+    let active = match Settings::load(&settings_path(&app)?).active() {
+        Ok(active) => active,
+        Err(message) => {
+            let _ = app.emit("ai-response-error", message);
+            return Ok(());
+        }
+    };
+    let key = keystore::get(&active.id)?;
+    if key.is_none() && active.needs_key {
         let _ = app.emit(
             "ai-response-error",
-            "No API key set. Open Settings and add your OpenRouter key (free to create at openrouter.ai).",
+            format!("No API key saved for {}. Open Settings and add one.", active.name),
         );
         return Ok(());
     }
@@ -105,7 +159,7 @@ async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatStat
         previous.cancel();
     }
 
-    let outcome = provider::stream_chat(&Client::new(), &settings, key.as_deref(), &messages, &token, &app).await;
+    let outcome = provider::stream_chat(&Client::new(), &active, key.as_deref(), &messages, &token, &app).await;
 
     {
         let mut active = state.active.lock().unwrap();
@@ -165,9 +219,8 @@ pub fn run() {
             clear_conversation,
             stop_streaming,
             get_settings,
-            save_settings,
-            set_api_key,
-            clear_api_key,
+            save_provider,
+            remove_api_key,
             list_models
         ])
         .setup(move |app| {

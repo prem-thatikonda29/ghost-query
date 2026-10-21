@@ -2,7 +2,7 @@
 //! `{base_url}/chat/completions` endpoint such as Ollama, Groq or OpenAI works).
 
 use crate::conversation::ChatMessage;
-use crate::settings::Settings;
+use crate::settings::Active;
 use crate::sse::SseParser;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -92,6 +92,7 @@ pub fn error_for_status(status: u16, body: &str) -> String {
         403 => "Request was blocked (moderation or key restrictions).",
         404 => "Model or endpoint not found. Check the model ID and base URL in Settings.",
         408 => "The request timed out.",
+        410 => "This model has been retired. Pick another model in Settings.",
         429 => "Rate limited. Free models allow 20 requests/minute and a daily cap; wait and retry.",
         500..=599 => "The provider had an error. Try again or pick another model.",
         _ => "Request failed.",
@@ -153,7 +154,7 @@ pub async fn fetch_models(client: &Client, base_url: &str, api_key: Option<&str>
 
 pub async fn stream_chat<R: Runtime>(
     client: &Client,
-    settings: &Settings,
+    active: &Active,
     api_key: Option<&str>,
     messages: &[ChatMessage],
     token: &CancellationToken,
@@ -162,12 +163,12 @@ pub async fn stream_chat<R: Runtime>(
     let mut full = String::new();
 
     let mut request = client
-        .post(chat_url(&settings.base_url))
-        .json(&build_request(&settings.model, messages));
+        .post(chat_url(&active.base_url))
+        .json(&build_request(&active.model, messages));
     if let Some(key) = api_key {
         request = request.bearer_auth(key);
     }
-    if is_openrouter(&settings.base_url) {
+    if is_openrouter(&active.base_url) {
         request = request
             .header("X-OpenRouter-Title", "Ghost Query")
             .header("HTTP-Referer", "https://github.com/prem-thatikonda29/ghost-query");
@@ -177,7 +178,7 @@ pub async fn stream_chat<R: Runtime>(
         _ = token.cancelled() => return Outcome::Cancelled(full),
         result = request.send() => match result {
             Ok(r) => r,
-            Err(e) => return Outcome::Failed(format!("Could not reach {}: {e}", settings.base_url)),
+            Err(e) => return Outcome::Failed(format!("Could not reach {}: {e}", active.base_url)),
         },
     };
 
@@ -270,6 +271,7 @@ mod tests {
         let m = error_for_status(401, body);
         assert!(m.contains("API key") && m.contains("No auth credentials found"));
         assert!(error_for_status(402, "").contains("credits"));
+        assert!(error_for_status(410, "").contains("retired"));
         assert!(error_for_status(429, "").contains("Rate limited"));
         assert!(error_for_status(503, "garbage").contains("503"));
     }
@@ -311,8 +313,14 @@ mod tests {
         (format!("http://{addr}/v1"), rx)
     }
 
-    fn settings(base_url: String) -> Settings {
-        Settings { base_url, model: "test/model".into() }
+    fn settings(base_url: String) -> Active {
+        Active {
+            id: "test".into(),
+            name: "Test".into(),
+            base_url,
+            model: "test/model".into(),
+            needs_key: false,
+        }
     }
 
     #[tokio::test]
