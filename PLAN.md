@@ -47,7 +47,15 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [ ] User to test: hotkey, Esc, drag, quit, behaviour over fullscreen apps (plain Tauri windows may not float over fullscreen Spaces; `tauri-nspanel` is the fallback), capture hiding in a real screen share
 - [ ] Windows: not built or tested (compile check planned in CI phase)
 
-## Phase 4+: Later
+## Phase 4: Pipeline
+- [x] `ci.yml`: frontend build + `cargo test --locked` on macOS and Windows for pushes to `main`/`v2-dev` and PRs
+- [x] `release.yml`: on `v*` tags, builds universal macOS dmg + Windows msi/exe and creates a draft release; tag must match the app version
+- [x] `beforeBuildCommand` added so `tauri build` builds the frontend
+- [x] Fixed npm/crate Tauri version mismatch (`@tauri-apps/api` and `cli` 2.8 -> 2.12) that made `tauri build` fail
+- [ ] Workflows cannot run until pushed to GitHub: first run on Windows is the first real Windows compile check
+- [ ] Code signing / notarization (needs Apple Developer and Windows certs; unsigned for now)
+
+## Phase 5+: Later
 - [ ] FTS5 search over history
 - [ ] Tool calling + MCP (`rmcp`), approval prompt before any tool runs; evaluate `rig-core` behind the Provider trait
 - [ ] CI: macOS + `windows-latest` compile check, release on tag

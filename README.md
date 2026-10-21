@@ -62,6 +62,21 @@ On first launch the Settings page opens: pick a provider, paste its API key, cho
 cargo test -p app
 ```
 
+CI (`.github/workflows/ci.yml`) runs the frontend build and these tests on macOS and Windows for every push to `main`/`v2-dev` and every pull request.
+
+## Releases
+
+Bump `version` in `src-tauri/tauri.conf.json`, commit, then push a matching tag:
+
+```sh
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+`.github/workflows/release.yml` builds a universal macOS `.dmg` and Windows installers (`.msi` and `-setup.exe`) and attaches them to a **draft** GitHub release for you to review and publish. The build fails if the tag doesn't match the app version.
+
+Builds are not code-signed, so macOS shows a Gatekeeper warning on first launch (right-click the app and choose Open) and Windows shows a SmartScreen warning.
+
 ## License
 
 MIT
