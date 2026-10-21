@@ -360,153 +360,156 @@ function App() {
 
   return (
     <div className={`${shell} flex flex-col`}>
-      <SettingsSheet open={showSettings} onOpenChange={setShowSettings} onChanged={setSettings} />
+      {/* Faded in, as it is drawn only once the window has grown to its full size */}
+      <div className="gq-fade-in flex min-h-0 flex-1 flex-col">
+        <SettingsSheet open={showSettings} onOpenChange={setShowSettings} onChanged={setSettings} />
 
-      {/* Header: drags the window; chat title on the left, icon buttons on the right */}
-      <div
-        data-tauri-drag-region
-        className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-2"
-      >
-        <ChatSwitcher
-          conversations={conversations}
-          currentId={currentId}
-          disabled={isLoading}
-          onSelect={selectConversation}
-          onDelete={deleteChat}
-        />
-        <div className="flex shrink-0 gap-0.5">
-          <IconButton label="New chat" shortcut={`${MOD}N`} onClick={newChat} disabled={isLoading}>
-            <Plus />
-          </IconButton>
-          <IconButton label="Collapse to bar" shortcut="Esc" onClick={collapse}>
-            <Minimize2 />
-          </IconButton>
-          <IconButton label="Settings" shortcut={`${MOD},`} onClick={openSettings}>
-            <Settings2 />
-          </IconButton>
+        {/* Header: drags the window; chat title on the left, icon buttons on the right */}
+        <div
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-2"
+        >
+          <ChatSwitcher
+            conversations={conversations}
+            currentId={currentId}
+            disabled={isLoading}
+            onSelect={selectConversation}
+            onDelete={deleteChat}
+          />
+          <div className="flex shrink-0 gap-0.5">
+            <IconButton label="New chat" shortcut={`${MOD}N`} onClick={newChat} disabled={isLoading}>
+              <Plus />
+            </IconButton>
+            <IconButton label="Collapse to bar" shortcut="Esc" onClick={collapse}>
+              <Minimize2 />
+            </IconButton>
+            <IconButton label="Settings" shortcut={`${MOD},`} onClick={openSettings}>
+              <Settings2 />
+            </IconButton>
+          </div>
         </div>
-      </div>
 
-      {/* Thread */}
-      <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5 px-5 py-6">
-          {startupNotices.map((notice) => (
-            <div key={notice} role="status" className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-              {notice}
-            </div>
-          ))}
-
-          {shownMessages.map((msg) =>
-            msg.role === "user" ? (
-              <div
-                key={msg.id}
-                className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed"
-              >
-                {msg.content}
+        {/* Thread */}
+        <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5 px-5 py-6">
+            {startupNotices.map((notice) => (
+              <div key={notice} role="status" className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+                {notice}
               </div>
-            ) : (
-              <div key={msg.id} className="group flex flex-col gap-1">
-                <Markdown text={msg.content} />
-                <div
-                  className={`-ml-1.5 flex items-center gap-0.5 ${
-                    msg.id === lastAssistantId ? "" : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
-                  }`}
-                >
-                  <IconButton
-                    label={copiedStates[`msg-${msg.id}`] ? "Copied" : "Copy reply"}
-                    className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
-                    onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
-                  >
-                    {copiedStates[`msg-${msg.id}`] ? <Check /> : <Copy />}
-                  </IconButton>
-                  {msg.id === lastAssistantId && !isLoading && (
-                    <IconButton
-                      label="Regenerate reply"
-                      className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
-                      onClick={() => send("", true)}
-                    >
-                      <RefreshCw />
-                    </IconButton>
-                  )}
-                  {msg.status === "cancelled" && (
-                    <span className="ml-1 text-xs text-muted-foreground">(incomplete)</span>
-                  )}
-                </div>
-              </div>
-            )
-          )}
-
-          {pendingUser && (
-            <div className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed">
-              {pendingUser}
-            </div>
-          )}
-
-          {isLoading &&
-            (response ? (
-              <Markdown text={response} />
-            ) : (
-              <span className="animate-pulse text-sm text-muted-foreground">Thinking…</span>
             ))}
 
-          {error && (
-            <div role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
-              {error}
-            </div>
-          )}
-        </div>
-      </div>
+            {shownMessages.map((msg) =>
+              msg.role === "user" ? (
+                <div
+                  key={msg.id}
+                  className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed"
+                >
+                  {msg.content}
+                </div>
+              ) : (
+                <div key={msg.id} className="group flex flex-col gap-1">
+                  <Markdown text={msg.content} />
+                  <div
+                    className={`-ml-1.5 flex items-center gap-0.5 ${
+                      msg.id === lastAssistantId ? "" : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
+                    }`}
+                  >
+                    <IconButton
+                      label={copiedStates[`msg-${msg.id}`] ? "Copied" : "Copy reply"}
+                      className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
+                      onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
+                    >
+                      {copiedStates[`msg-${msg.id}`] ? <Check /> : <Copy />}
+                    </IconButton>
+                    {msg.id === lastAssistantId && !isLoading && (
+                      <IconButton
+                        label="Regenerate reply"
+                        className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
+                        onClick={() => send("", true)}
+                      >
+                        <RefreshCw />
+                      </IconButton>
+                    )}
+                    {msg.status === "cancelled" && (
+                      <span className="ml-1 text-xs text-muted-foreground">(incomplete)</span>
+                    )}
+                  </div>
+                </div>
+              )
+            )}
 
-      {/* Composer */}
-      <div className="shrink-0 px-4 pb-4">
-        <ChatInput
-          variant="unstyled"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onSubmit={handleSubmit}
-          loading={isLoading}
-          onStop={handleStop}
-          className="mx-auto max-w-[672px] flex-col items-stretch gap-1.5 rounded-xl border border-border bg-field px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-primary/50"
-        >
-          <ChatInputTextArea
-            ref={inputRef}
-            variant="unstyled"
-            aria-label="Message"
-            placeholder={messages.length > 0 ? "Ask a follow-up…" : "Ask anything…"}
-            className="max-h-40 min-h-0 rounded-none bg-transparent p-0 text-sm leading-relaxed placeholder:text-muted-foreground"
-          />
-          <div className="flex items-center justify-between gap-2">
-            <ModelPicker
-              view={settings}
-              open={pickerOpen}
-              onOpenChange={setPickerOpen}
-              onPicked={setSettings}
-              onManage={openSettings}
-              onError={setError}
-            />
-            {isLoading ? (
-              <IconButton
-                label="Stop"
-                side="top"
-                className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
-                onClick={handleStop}
-              >
-                <Square />
-              </IconButton>
-            ) : (
-              <IconButton
-                label="Send"
-                shortcut="↵"
-                side="top"
-                disabled={!canSend}
-                className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleSubmit}
-              >
-                <ArrowUp />
-              </IconButton>
+            {pendingUser && (
+              <div className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed">
+                {pendingUser}
+              </div>
+            )}
+
+            {isLoading &&
+              (response ? (
+                <Markdown text={response} />
+              ) : (
+                <span className="animate-pulse text-sm text-muted-foreground">Thinking…</span>
+              ))}
+
+            {error && (
+              <div role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
+                {error}
+              </div>
             )}
           </div>
-        </ChatInput>
+        </div>
+
+        {/* Composer */}
+        <div className="shrink-0 px-4 pb-4">
+          <ChatInput
+            variant="unstyled"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onSubmit={handleSubmit}
+            loading={isLoading}
+            onStop={handleStop}
+            className="mx-auto max-w-[672px] flex-col items-stretch gap-1.5 rounded-xl border border-border bg-field px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-primary/50"
+          >
+            <ChatInputTextArea
+              ref={inputRef}
+              variant="unstyled"
+              aria-label="Message"
+              placeholder={messages.length > 0 ? "Ask a follow-up…" : "Ask anything…"}
+              className="max-h-40 min-h-0 rounded-none bg-transparent p-0 text-sm leading-relaxed placeholder:text-muted-foreground"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <ModelPicker
+                view={settings}
+                open={pickerOpen}
+                onOpenChange={setPickerOpen}
+                onPicked={setSettings}
+                onManage={openSettings}
+                onError={setError}
+              />
+              {isLoading ? (
+                <IconButton
+                  label="Stop"
+                  side="top"
+                  className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
+                  onClick={handleStop}
+                >
+                  <Square />
+                </IconButton>
+              ) : (
+                <IconButton
+                  label="Send"
+                  shortcut="↵"
+                  side="top"
+                  disabled={!canSend}
+                  className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleSubmit}
+                >
+                  <ArrowUp />
+                </IconButton>
+              )}
+            </div>
+          </ChatInput>
+        </div>
       </div>
     </div>
   );

@@ -136,11 +136,14 @@ pub fn set_mode<R: Runtime>(window: &WebviewWindow<R>, mode: Mode, animate: bool
     Ok(())
 }
 
-/// Moves and resizes the window in one step. On macOS this goes through AppKit, which
-/// can animate the change; elsewhere it is immediate.
+/// Moves and resizes the window in one step and returns once it is done, so the
+/// caller can draw into the final size. On macOS this goes through AppKit, which can
+/// animate the change (AppKit returns when the animation ends); elsewhere it is
+/// immediate.
 pub fn set_frame<R: Runtime>(window: &WebviewWindow<R>, target: Rect, animate: bool) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
+        use objc2::MainThreadMarker;
         use objc2_app_kit::NSWindow;
         use objc2_foundation::{NSPoint, NSRect, NSSize};
 
@@ -148,7 +151,7 @@ pub fn set_frame<R: Runtime>(window: &WebviewWindow<R>, target: Rect, animate: b
         // A raw pointer is not Send; the address is only turned back into a reference
         // on the main thread, where AppKit requires it to be used.
         let ns_window = window.ns_window()? as usize;
-        return window.run_on_main_thread(move || {
+        let apply = move || {
             // SAFETY: the address is this window's live NSWindow, which outlives the call.
             let ns_window = unsafe { &*(ns_window as *const NSWindow) };
             let old = ns_window.frame();
@@ -160,7 +163,20 @@ pub fn set_frame<R: Runtime>(window: &WebviewWindow<R>, target: Rect, animate: b
                 NSSize::new(target.width, target.height),
             );
             ns_window.setFrame_display_animate(rect, true, animate);
-        });
+        };
+        if MainThreadMarker::new().is_some() {
+            apply();
+            return Ok(());
+        }
+        // Off the main thread: hand the change over and wait for it, which cannot
+        // deadlock because this thread is not the one doing the work.
+        let (done, finished) = std::sync::mpsc::channel();
+        window.run_on_main_thread(move || {
+            apply();
+            let _ = done.send(());
+        })?;
+        let _ = finished.recv();
+        return Ok(());
     }
     #[cfg(not(target_os = "macos"))]
     {

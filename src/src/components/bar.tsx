@@ -15,13 +15,15 @@ interface BarProps {
 
 /// The Spotlight-like state of the window: one line to ask from. The empty parts of
 /// the bar drag the window. Tooltips open sideways, as the bar has no room below.
+/// Its size is fixed and it sits at the top centre, which is where the window grows
+/// from, so it stays still while the window opens into the panel.
 export const Bar = forwardRef<HTMLInputElement, BarProps>(function Bar(
   { value, onChange, onSubmit, onExpand, loading, onStop, placeholder },
   ref
 ) {
   const empty = value.trim().length === 0;
   return (
-    <div data-tauri-drag-region className="flex h-full items-center gap-2 pl-[18px] pr-2.5">
+    <div data-tauri-drag-region className="mx-auto flex h-14 w-full max-w-[680px] items-center gap-2 pl-[18px] pr-2.5">
       <Ghost aria-hidden="true" className="h-[18px] w-[18px] shrink-0 text-primary" />
       <input
         ref={ref}

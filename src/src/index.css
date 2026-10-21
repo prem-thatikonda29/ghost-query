@@ -133,3 +133,16 @@ body {
     animation: gq-sheet-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 }
+
+/* The panel's content appears once the window has finished growing. */
+@keyframes gq-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gq-fade-in {
+    animation: gq-fade-in 140ms ease-out;
+  }
+}
