@@ -39,7 +39,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm --prefix src ci
 
-      # The Tauri build script needs ../src/dist to exist, and this also type-checks the UI bundle.
+      # The Tauri build script needs ../src/dist to exist (this also proves the UI bundles).
       - name: Build frontend
         run: npm --prefix src run build
 
