@@ -5,13 +5,10 @@ mod provider;
 mod providers;
 mod settings;
 mod sse;
+mod window;
 
 use conversation::{build_request_messages, HISTORY_TOKEN_BUDGET};
 use db::{ConversationSummary, Db, StoredMessage};
-use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
-};
 use provider::{ModelInfo, Outcome};
 use reqwest::Client;
 use serde::Serialize;
@@ -19,7 +16,8 @@ use settings::Settings;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, ShortcutState};
 use tokio_util::sync::CancellationToken;
 
 const SYSTEM_PROMPT: &str = "You are Ghost Query, a concise assistant. Answer directly. \
@@ -55,6 +53,7 @@ struct ProviderView {
 struct SettingsView {
     active: String,
     providers: Vec<ProviderView>,
+    hide_from_capture: bool,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -66,6 +65,7 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn settings_view(settings: &Settings) -> SettingsView {
     SettingsView {
+        hide_from_capture: settings.hide_from_capture,
         active: settings.active.clone(),
         providers: providers::PRESETS
             .iter()
@@ -249,6 +249,37 @@ async fn ask_ai_stream(
 }
 
 #[tauri::command]
+fn hide_window(window: WebviewWindow) {
+    let _ = window.hide();
+}
+
+/// With no Dock icon or taskbar entry, the app needs its own way to quit.
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+fn set_hide_from_capture(app: AppHandle, window: WebviewWindow, enabled: bool) -> Result<SettingsView, String> {
+    let path = settings_path(&app)?;
+    let mut settings = Settings::load(&path);
+    settings.hide_from_capture = enabled;
+    settings.save(&path)?;
+    window.set_content_protected(enabled).map_err(|e| e.to_string())?;
+    Ok(settings_view(&settings))
+}
+
+/// Set when the global shortcut could not be registered (for example another app
+/// owns it), so the UI can say why the hotkey does nothing.
+#[derive(Default)]
+struct HotkeyStatus(Mutex<Option<String>>);
+
+#[tauri::command]
+fn get_hotkey_status(status: State<'_, HotkeyStatus>) -> Option<String> {
+    status.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
 fn stop_streaming(state: State<'_, ChatState>) -> Result<(), String> {
     if let Some((_, token)) = state.active.lock().unwrap().as_ref() {
         token.cancel();
@@ -258,13 +289,27 @@ fn stop_streaming(state: State<'_, ChatState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The hotkey manager must be created before the app starts and kept alive.
-    // Phase 2 replaces this with tauri-plugin-global-shortcut.
-    let manager = GlobalHotKeyManager::new().unwrap();
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-    manager.register(hotkey).unwrap();
+    let debounce = std::sync::Arc::new(Mutex::new(window::Debounce::new()));
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed
+                        || !shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::Space)
+                    {
+                        return;
+                    }
+                    if !debounce.lock().unwrap().allow(std::time::Instant::now()) {
+                        return;
+                    }
+                    if let Some(main) = app.get_webview_window("main") {
+                        window::toggle(&main);
+                    }
+                })
+                .build(),
+        )
+        .manage(HotkeyStatus::default())
         .invoke_handler(tauri::generate_handler![
             ask_ai_stream,
             list_conversations,
@@ -272,13 +317,17 @@ pub fn run() {
             rename_conversation,
             delete_conversation,
             get_messages,
+            hide_window,
+            quit_app,
+            set_hide_from_capture,
+            get_hotkey_status,
             stop_streaming,
             get_settings,
             save_provider,
             remove_api_key,
             list_models
         ])
-        .setup(move |app| {
+        .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -291,44 +340,28 @@ pub fn run() {
             app.manage(ChatState::new(Db::open(&data_dir.join("ghost-query.db"))?));
 
             let window = app.get_webview_window("main").unwrap();
-            window.hide().unwrap();
 
-            // No Dock icon. The window-style tweaks that used to live here made it a
-            // regular titled window; the real ghost-panel setup arrives in Phase 2.
+            // The config protects the window by default; honour the user's choice.
+            let settings = Settings::load(&settings_path(app.handle())?);
+            let _ = window.set_content_protected(settings.hide_from_capture);
+
+            // No Dock icon.
             #[cfg(target_os = "macos")]
             {
                 let _ = app.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
-            let main_window = window.clone();
-            std::thread::spawn(move || {
-                let mut last_toggle = std::time::Instant::now();
-                for event in GlobalHotKeyEvent::receiver().iter() {
-                    if event.id != hotkey.id() {
-                        continue;
-                    }
-                    // Debounce: only allow toggling every 200ms
-                    if last_toggle.elapsed().as_millis() < 200 {
-                        continue;
-                    }
-                    last_toggle = std::time::Instant::now();
-
-                    if main_window.is_visible().unwrap_or(false) {
-                        let _ = main_window.hide();
-                    } else {
-                        let _ = main_window.center();
-                        let _ = main_window.show();
-                        let _ = main_window.unminimize();
-                        let _ = main_window.set_focus();
-                    }
-                }
-            });
+            // Ctrl+Shift+Space summons/dismisses the window. If it cannot be registered the
+            // app would be invisible and unreachable, so show the window and record why.
+            if let Err(e) = app.global_shortcut().register("ctrl+shift+space") {
+                let message = format!("Ctrl+Shift+Space could not be registered ({e}). Another app may be using it.");
+                log::warn!("{message}");
+                *app.state::<HotkeyStatus>().0.lock().unwrap() = Some(message);
+                window::show(&window);
+            }
 
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-
-    drop(manager);
 }
-

@@ -21,11 +21,17 @@ pub struct ProviderConfig {
 pub struct Settings {
     pub active: String,
     pub providers: BTreeMap<String, ProviderConfig>,
+    /// Ask the OS to exclude the window from screenshots and screen sharing.
+    pub hide_from_capture: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { active: DEFAULT_ACTIVE.to_string(), providers: BTreeMap::new() }
+        Self {
+            active: DEFAULT_ACTIVE.to_string(),
+            providers: BTreeMap::new(),
+            hide_from_capture: true,
+        }
     }
 }
 
@@ -205,6 +211,17 @@ mod tests {
         assert_eq!(Settings::load(&path), s);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+    }
+
+    #[test]
+    fn capture_hiding_is_on_by_default_including_for_older_settings_files() {
+        assert!(Settings::default().hide_from_capture);
+        let path = temp_path("pre-capture.json");
+        std::fs::write(&path, r#"{"active":"groq","providers":{}}"#).unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.active, "groq");
+        assert!(loaded.hide_from_capture);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

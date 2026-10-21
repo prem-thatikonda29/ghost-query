@@ -39,11 +39,13 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [ ] User to test, then Phase 3
 
 ## Phase 3: Ghost window
-- [ ] Frameless, always-on-top, skip taskbar/Dock, all workspaces
-- [ ] `set_content_protected(true)` (macOS 15+ ScreenCaptureKit may ignore it; do not promise more than "requests exclusion")
-- [ ] `tauri-plugin-global-shortcut` replaces the hand-rolled hotkey thread
-- [ ] Windows: OR in `WS_EX_TOOLWINDOW` instead of overwriting styles
-- [ ] Decide focus model (must accept typing); `tauri-nspanel` only if plain Tauri settings misbehave
+- [x] Frameless (`decorations: false`), always-on-top, skip taskbar, all workspaces (macOS/Linux; unsupported on Windows), starts hidden; config guarded by a unit test
+- [x] `contentProtected` on by default plus a Settings toggle (macOS 15+ ScreenCaptureKit may ignore it; UI says "asks the OS", never "guarantees")
+- [x] `tauri-plugin-global-shortcut` (Ctrl+Shift+Space, debounced) replaces the hand-rolled hotkey thread and the `global-hotkey` crate
+- [x] No window-style hacks; Windows needs no custom code (Tauri handles skipTaskbar/content protection)
+- [x] Frameless extras: draggable header (`core:window:allow-start-dragging`), Esc hides, Ctrl/Cmd+Q and a Settings button quit, hotkey-registration failure shows the window plus a notice
+- [ ] User to test: hotkey, Esc, drag, quit, behaviour over fullscreen apps (plain Tauri windows may not float over fullscreen Spaces; `tauri-nspanel` is the fallback), capture hiding in a real screen share
+- [ ] Windows: not built or tested (compile check planned in CI phase)
 
 ## Phase 4+: Later
 - [ ] FTS5 search over history

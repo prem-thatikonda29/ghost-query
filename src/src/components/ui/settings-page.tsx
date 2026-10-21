@@ -17,6 +17,7 @@ export interface ProviderView {
 export interface SettingsView {
   active: string;
   providers: ProviderView[];
+  hide_from_capture: boolean;
 }
 
 interface ModelInfo {
@@ -105,6 +106,16 @@ export function SettingsPage({ onBack, onChanged }: SettingsPageProps) {
     }
   };
 
+  const toggleCapture = async (enabled: boolean) => {
+    try {
+      const updated = await invoke<SettingsView>("set_hide_from_capture", { enabled });
+      setView(updated);
+      onChanged(updated);
+    } catch (err) {
+      report(String(err), true);
+    }
+  };
+
   const removeKey = async () => {
     if (!provider) return;
     try {
@@ -120,12 +131,12 @@ export function SettingsPage({ onBack, onChanged }: SettingsPageProps) {
   return (
     <div className="w-full flex flex-col h-screen p-4">
       <div className="flex-1 flex flex-col max-w-xl mx-auto w-full min-h-0 overflow-y-auto">
-        <div className="flex items-center gap-2 mb-4">
+        <div data-tauri-drag-region className="flex items-center gap-2 mb-4">
           <Button variant="outline" size="sm" onClick={onBack}>
             <ArrowLeft className="h-4 w-4 mr-1" />
             Back to chat
           </Button>
-          <h1 className="text-lg font-semibold">Settings</h1>
+          <h1 data-tauri-drag-region className="text-lg font-semibold">Settings</h1>
         </div>
 
         {view && provider && (
@@ -223,6 +234,32 @@ export function SettingsPage({ onBack, onChanged }: SettingsPageProps) {
                 Save and use
               </Button>
             </div>
+          </div>
+        )}
+
+        {view && (
+          <div className="mt-8 pt-4 border-t space-y-3">
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={view.hide_from_capture}
+                onChange={(e) => toggleCapture(e.target.checked)}
+              />
+              <span>
+                Hide this window from screenshots and screen sharing
+                <span className="block text-muted-foreground">
+                  Asks the operating system to exclude the window. Some capture methods (for
+                  example newer macOS screen-recording APIs) may still capture it.
+                </span>
+              </span>
+            </label>
+            <div className="text-xs text-muted-foreground">
+              Ctrl+Shift+Space shows or hides the window. Esc hides it.
+            </div>
+            <Button size="sm" variant="outline" onClick={() => invoke("quit_app")}>
+              Quit Ghost Query
+            </Button>
           </div>
         )}
 

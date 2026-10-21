@@ -7,7 +7,7 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 - **Bring your own key, any provider** — A separate Settings page lets you pick OpenRouter (including free `:free` models), OpenAI, Claude (Anthropic), Google Gemini, Groq, NVIDIA NIM, Mistral, Together AI, DeepSeek or local Ollama; the base URL is set for you. Choose "Custom" to enter your own base URL and key for any other OpenAI-compatible endpoint (AgentRouter, a self-hosted gateway, ...). Each provider keeps its own key and model.
 - **Keys stay in the keychain** — One entry per provider in the macOS Keychain / Windows Credential Manager. The UI can save or remove a key but never reads it back, and the app never writes it to disk.
 - **Streaming responses** — Real-time token-by-token output, with a Stop button that cancels the request.
-- **Global hotkey** — Ctrl+Shift+Space shows or hides the window; no Dock icon on macOS.
+- **Ghost window** — Frameless, always-on-top, no Dock icon or taskbar entry. Ctrl+Shift+Space shows or hides it, Esc hides it, Ctrl/Cmd+Q quits. By default it asks the OS to exclude the window from screenshots and screen sharing (toggle in Settings; not guaranteed on every capture method).
 - **Persistent conversations** — Chats are saved in a local SQLite database, with a conversation switcher, New chat, Delete and Regenerate. Long chats are trimmed to a token budget when sent.
 - **Markdown rendering** — Syntax-highlighted code blocks with copy buttons.
 
@@ -27,7 +27,8 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 │       └── lib/          # Utilities
 ├── src-tauri/            # Tauri/Rust backend
 │   └── src/
-│       ├── lib.rs        # App setup, commands, hotkey
+│       ├── lib.rs        # App setup, commands, global shortcut
+│       ├── window.rs     # Show/hide logic and debounce
 │       ├── provider.rs   # OpenAI-compatible streaming client
 │       ├── providers.rs  # Built-in provider presets
 │       ├── keystore.rs   # Per-provider API keys in the OS keychain

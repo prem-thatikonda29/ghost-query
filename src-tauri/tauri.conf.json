@@ -16,8 +16,14 @@
         "resizable": true,
         "title": "Ghost Query",
         "width": 800,
-        "decorations": true,
-        "transparent": false
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visibleOnAllWorkspaces": true,
+        "contentProtected": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

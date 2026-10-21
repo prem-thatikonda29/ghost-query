@@ -45,6 +45,7 @@ function App() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [activeLabel, setActiveLabel] = useState("");
+  const [hotkeyNotice, setHotkeyNotice] = useState("");
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
   const currentIdRef = useRef("");
   const threadRef = useRef<HTMLDivElement>(null);
@@ -114,6 +115,24 @@ function App() {
       unlistenError.then((unlisten) => unlisten());
       unlistenCancelled.then((unlisten) => unlisten());
     };
+  }, []);
+
+  // Frameless ghost window: Esc hides it (the global shortcut brings it back) and
+  // Ctrl/Cmd+Q quits, since there is no Dock icon or title bar to do either.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        invoke("hide_window");
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "q") {
+        e.preventDefault();
+        invoke("quit_app");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    invoke<string | null>("get_hotkey_status")
+      .then((status) => setHotkeyNotice(status ?? ""))
+      .catch(() => {});
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   // On mount: open the most recent conversation (or a fresh one) and load settings.
@@ -272,9 +291,9 @@ function App() {
     <div className="w-full flex flex-col h-screen p-4">
       <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
         {/* Header with controls */}
-        <div className="flex justify-between items-center mb-4 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <h1 className="text-lg font-semibold shrink-0">Ghost Query</h1>
+        <div data-tauri-drag-region className="flex justify-between items-center mb-4 gap-2">
+          <div data-tauri-drag-region className="flex items-center gap-2 min-w-0">
+            <h1 data-tauri-drag-region className="text-lg font-semibold shrink-0">Ghost Query</h1>
             <select
               className="min-w-0 max-w-xs rounded-lg border border-input bg-background px-2 py-1 text-sm"
               value={currentId}
@@ -315,6 +334,12 @@ function App() {
             </Button>
           </div>
         </div>
+
+        {hotkeyNotice && (
+          <div className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
+            {hotkeyNotice}
+          </div>
+        )}
 
         {/* Message thread */}
         <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto mb-4 space-y-3">
