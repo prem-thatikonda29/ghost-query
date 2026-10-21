@@ -10,21 +10,28 @@
     "beforeBuildCommand": "npm --prefix ../src run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "fullscreen": false,
-        "height": 600,
-        "resizable": true,
+        "height": 56,
+        "resizable": false,
         "title": "Ghost Query",
-        "width": 800,
+        "width": 680,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visibleOnAllWorkspaces": true,
         "contentProtected": true,
         "visible": false,
-        "center": true
+        "windowEffects": {
+          "effects": [
+            "popover"
+          ],
+          "state": "active",
+          "radius": 14
+        }
       }
     ],
     "security": {
@@ -35,6 +42,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.icns", "icons/icon.ico"]
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

@@ -1,22 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  ChatInput,
-  ChatInputTextArea,
-  ChatInputSubmit,
-} from "./components/ui/chat-input";
+import { ChatInput, ChatInputTextArea } from "./components/ui/chat-input";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Button } from "./components/ui/button";
-import { SettingsPage, SettingsView } from "./components/ui/settings-page";
-import { Trash2, Copy, Check, Settings, Plus, RefreshCw } from "lucide-react";
+import { SettingsSheet, SettingsView } from "./components/settings-sheet";
+import { ArrowUp, Check, Copy, Ghost, Minimize2, Plus, RefreshCw, Settings2, Square, X } from "lucide-react";
 import { Markdown } from "./components/markdown";
-
-interface ConversationSummary {
-  id: string;
-  title: string;
-  created_at: number;
-  updated_at: number;
-}
+import { Bar } from "./components/bar";
+import { ChatSwitcher, ConversationSummary } from "./components/chat-switcher";
+import { ModelPicker } from "./components/model-picker";
+import { IconButton } from "./components/ui/icon-button";
+import { MOD } from "./lib/utils";
 
 interface StoredMessage {
   id: number;
@@ -26,10 +19,13 @@ interface StoredMessage {
   timestamp: number;
 }
 
-const activeLabelFor = (view: SettingsView) => {
-  const active = view.providers.find((p) => p.id === view.active);
-  return active ? `${active.name} · ${active.model || "no model"}` : "";
-};
+// Asking from the bar after this long without a message starts a new chat.
+const QUIET_MS = 5 * 60 * 1000;
+
+// The window is either a one-line bar or the chat panel (see window.rs).
+type WindowMode = "bar" | "panel";
+
+const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function App() {
   const [message, setMessage] = useState("");
@@ -44,12 +40,56 @@ function App() {
   const [currentId, setCurrentId] = useState("");
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [activeLabel, setActiveLabel] = useState("");
+  const [settings, setSettings] = useState<SettingsView | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Refreshed whenever the window is summoned, for the bar's quiet-period check.
+  const [now, setNow] = useState(() => Date.now());
   const [startupNotices, setStartupNotices] = useState<string[]>([]);
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
+  const [mode, setMode] = useState<WindowMode>("bar");
+  const modeRef = useRef<WindowMode>("bar");
   const currentIdRef = useRef("");
   const threadRef = useRef<HTMLDivElement>(null);
+  // Whether the thread follows new text; off while the user has scrolled up to read.
+  const followRef = useRef(true);
+  // The prompt being answered, cleared from the composer on send and put back if
+  // the request fails before anything is saved.
+  const inFlightPrompt = useRef("");
+  // Read out by screen readers, which are not sent every streamed chunk.
+  const [announcement, setAnnouncement] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const barRef = useRef<HTMLInputElement>(null);
+
+  // Growing: the window is resized first, then the panel is drawn into it.
+  // Shrinking: the bar is drawn first, then the window shrinks around it.
+  const expand = async () => {
+    if (modeRef.current === "panel") return;
+    modeRef.current = "panel";
+    try {
+      await invoke("set_window_mode", { mode: "panel", animate: !prefersReducedMotion() });
+    } catch (err) {
+      console.error("Failed to expand the window:", err);
+    }
+    setMode("panel");
+  };
+
+  const collapse = async () => {
+    if (modeRef.current === "bar") return;
+    modeRef.current = "bar";
+    setMode("bar");
+    setShowSettings(false);
+    setPickerOpen(false);
+    try {
+      await invoke("set_window_mode", { mode: "bar", animate: !prefersReducedMotion() });
+    } catch (err) {
+      console.error("Failed to collapse the window:", err);
+    }
+  };
+
+  const openSettings = async () => {
+    await expand();
+    setShowSettings(true);
+  };
 
   const refreshConversations = async () => {
     const list = await invoke<ConversationSummary[]>("list_conversations");
@@ -63,6 +103,7 @@ function App() {
 
   const selectConversation = async (id: string) => {
     currentIdRef.current = id;
+    followRef.current = true;
     setCurrentId(id);
     setResponse("");
     setPendingUser("");
@@ -83,15 +124,17 @@ function App() {
     });
 
     const unlistenDone = listen<string>("ai-response-done", async () => {
+      inFlightPrompt.current = "";
       await refresh();
       setResponse("");
       setPendingUser("");
       setRegenerating(false);
       setIsLoading(false);
-      setMessage("");
+      setAnnouncement("Reply finished");
     });
 
     const unlistenError = listen<string>("ai-response-error", (event) => {
+      restorePrompt();
       setError(event.payload);
       setResponse("");
       setPendingUser("");
@@ -100,8 +143,11 @@ function App() {
     });
 
     const unlistenCancelled = listen<string>("ai-response-cancelled", async (event) => {
-      // A stopped reply with text is saved; the prompt then leaves the input box.
-      if (event.payload) setMessage("");
+      // A stopped reply with text is saved with its prompt; stopped before any text,
+      // nothing is saved and the prompt goes back into the composer.
+      if (event.payload) inFlightPrompt.current = "";
+      else restorePrompt();
+      setAnnouncement("Reply stopped");
       await refresh();
       setResponse("");
       setPendingUser("");
@@ -109,7 +155,21 @@ function App() {
       setIsLoading(false);
     });
 
+    // Dismissing the window (Esc, the shortcut) folds it back into the bar.
+    const unlistenCollapsed = listen("window-collapsed", () => {
+      modeRef.current = "bar";
+      setMode("bar");
+      setShowSettings(false);
+      setPickerOpen(false);
+    });
+    const unlistenShown = listen("window-shown", () => {
+      setNow(Date.now());
+      (modeRef.current === "bar" ? barRef.current : inputRef.current)?.focus();
+    });
+
     return () => {
+      unlistenCollapsed.then((unlisten) => unlisten());
+      unlistenShown.then((unlisten) => unlisten());
       unlistenChunk.then((unlisten) => unlisten());
       unlistenDone.then((unlisten) => unlisten());
       unlistenError.then((unlisten) => unlisten());
@@ -117,27 +177,54 @@ function App() {
     };
   }, []);
 
-  // Frameless ghost window: Esc hides it (the global shortcut brings it back) and
-  // Ctrl/Cmd+Q quits, since there is no Dock icon or title bar to do either.
+  // Frameless ghost window, so the keyboard does what a title bar would: Esc steps back
+  // (settings → panel → bar → hidden; the global shortcut brings it back) and Cmd/Ctrl+Q
+  // quits, since there is no Dock icon either.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        invoke("hide_window");
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "q") {
+      const mod = e.metaKey || e.ctrlKey;
+      // An open popup (chat list, model picker, tooltip) closes first; Radix marks
+      // that Esc as handled.
+      if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented) {
+        if (showSettings) setShowSettings(false);
+        else if (mode === "panel") collapse();
+        else invoke("hide_window");
+      } else if (mod && e.key.toLowerCase() === "q") {
         e.preventDefault();
         invoke("quit_app");
+      } else if (mod && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        if (!isLoading) newChat();
+      } else if (mod && e.key === "ArrowUp" && mode === "bar") {
+        e.preventDefault();
+        expand();
+      } else if (mod && e.key === ",") {
+        e.preventDefault();
+        openSettings();
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    invoke<string[]>("get_startup_notices")
-      .then(setStartupNotices)
-      .catch(() => {});
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mode, showSettings, isLoading, messages]);
+
+  // Startup problems need room to be read, so they open the panel.
+  useEffect(() => {
+    invoke<string[]>("get_startup_notices")
+      .then((notices) => {
+        setStartupNotices(notices);
+        if (notices.length > 0) expand();
+      })
+      .catch(() => {});
   }, []);
+
+  // Focus follows the mode: the bar's field, or the panel's composer.
+  useEffect(() => {
+    if (mode === "bar") barRef.current?.focus();
+    else if (!showSettings) inputRef.current?.focus();
+  }, [mode, showSettings]);
 
   // On mount: open the most recent conversation (or a fresh one) and load settings.
   useEffect(() => {
-    inputRef.current?.focus();
     (async () => {
       try {
         let list = await refreshConversations();
@@ -153,21 +240,36 @@ function App() {
 
     invoke<SettingsView>("get_settings")
       .then((view) => {
-        setActiveLabel(activeLabelFor(view));
+        setSettings(view);
         // First run: the active provider needs a key, so open settings straight away.
         const active = view.providers.find((p) => p.id === view.active);
-        if (active && active.needs_key && !active.has_key) setShowSettings(true);
+        if (active && active.needs_key && !active.has_key) openSettings();
       })
       .catch((err) => console.error("Failed to load settings:", err));
   }, []);
 
   useEffect(() => {
-    if (threadRef.current) {
+    if (threadRef.current && followRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
-  }, [messages, response, pendingUser]);
+  }, [messages, response, pendingUser, error]);
 
+  const onThreadScroll = () => {
+    const el = threadRef.current;
+    if (el) followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+
+  // Called from the stream listeners (registered once), so it only uses setters and
+  // refs. Anything typed meanwhile is kept rather than overwritten.
+  const restorePrompt = () => {
+    const prompt = inFlightPrompt.current;
+    inFlightPrompt.current = "";
+    if (prompt) setMessage((typed) => typed || prompt);
+  };
+
+  // An empty current chat is reused rather than piling up untitled ones.
   const newChat = async () => {
+    if (messages.length === 0 && currentIdRef.current) return;
     try {
       const created = await invoke<ConversationSummary>("create_conversation");
       await refreshConversations();
@@ -177,33 +279,43 @@ function App() {
     }
   };
 
-  const deleteChat = async () => {
+  const deleteChat = async (id: string) => {
     try {
-      await invoke("delete_conversation", { conversationId: currentId });
+      await invoke("delete_conversation", { conversationId: id });
       let list = await refreshConversations();
       if (list.length === 0) {
         await invoke("create_conversation");
         list = await refreshConversations();
       }
-      await selectConversation(list[0].id);
+      if (id === currentIdRef.current || !list.some((c) => c.id === currentIdRef.current)) {
+        await selectConversation(list[0].id);
+      }
     } catch (err) {
       setError(String(err));
     }
   };
 
+  // Uses the ref, so a chat created just before (see submitFromBar) is the one asked in.
   const send = async (prompt: string, regenerate: boolean) => {
     setIsLoading(true);
     setError("");
     setResponse("");
     setRegenerating(regenerate);
     setPendingUser(regenerate ? "" : prompt);
+    setAnnouncement("");
+    followRef.current = true;
+    if (!regenerate) {
+      inFlightPrompt.current = prompt;
+      setMessage("");
+    }
     try {
       await invoke("ask_ai_stream", {
-        conversationId: currentId,
+        conversationId: currentIdRef.current,
         prompt,
         regenerate,
       });
     } catch (err) {
+      restorePrompt();
       setError(String(err));
       setPendingUser("");
       setRegenerating(false);
@@ -214,6 +326,19 @@ function App() {
   const handleSubmit = () => {
     if (message.trim() && !isLoading) send(message, false);
   };
+
+  const lastTimestamp = messages[messages.length - 1]?.timestamp;
+  const continuing = lastTimestamp !== undefined && now - lastTimestamp < QUIET_MS;
+
+  // Asking from the bar grows the window into the panel to show the answer. After a
+  // quiet spell the question starts a new chat instead of continuing the last one.
+  const submitFromBar = async () => {
+    if (!message.trim() || isLoading) return;
+    if (lastTimestamp !== undefined && Date.now() - lastTimestamp >= QUIET_MS) await newChat();
+    await expand();
+    send(message, false);
+  };
+
 
   const handleStop = async () => {
     try {
@@ -234,12 +359,28 @@ function App() {
     }
   };
 
-  if (showSettings) {
+  // The rounded surface of the transparent window (see index.css).
+  const shell = "h-full w-full overflow-hidden rounded-[14px] border border-border bg-background text-foreground";
+  const currentTitle = conversations.find((c) => c.id === currentId)?.title ?? "";
+
+  if (mode === "bar") {
     return (
-      <SettingsPage
-        onBack={() => setShowSettings(false)}
-        onChanged={(view) => setActiveLabel(activeLabelFor(view))}
-      />
+      <div className={shell}>
+        <Bar
+          ref={barRef}
+          value={message}
+          onChange={setMessage}
+          onSubmit={submitFromBar}
+          onExpand={expand}
+          loading={isLoading}
+          onStop={handleStop}
+          placeholder={
+            continuing && currentTitle
+              ? `Follow up on “${currentTitle.length > 40 ? `${currentTitle.slice(0, 39)}…` : currentTitle}”`
+              : "Ask anything…"
+          }
+        />
+      </div>
     );
   }
 
@@ -248,141 +389,196 @@ function App() {
   const shownMessages =
     regenerating && lastMessage?.role === "assistant" ? messages.slice(0, -1) : messages;
   const lastAssistantId = lastMessage?.role === "assistant" ? lastMessage.id : null;
+  const canSend = message.trim().length > 0;
+  const isEmpty = shownMessages.length === 0 && !pendingUser && !isLoading && !error && startupNotices.length === 0;
 
   return (
-    <div className="w-full flex flex-col h-screen p-4">
-      <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
-        {/* Header with controls */}
-        <div data-tauri-drag-region className="flex justify-between items-center mb-4 gap-2">
-          <div data-tauri-drag-region className="flex items-center gap-2 min-w-0">
-            <h1 data-tauri-drag-region className="text-lg font-semibold shrink-0">Ghost Query</h1>
-            <select
-              className="min-w-0 max-w-xs rounded-lg border border-input bg-background px-2 py-1 text-sm"
-              value={currentId}
-              disabled={isLoading}
-              onChange={(e) => selectConversation(e.target.value)}
-              title="Conversations"
-            >
-              {conversations.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            <Button variant="outline" size="sm" onClick={newChat} disabled={isLoading}>
-              <Plus className="h-4 w-4 mr-1" />
-              New chat
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={deleteChat}
-              disabled={isLoading || messages.length === 0}
-              title="Delete this conversation"
-            >
-              <Trash2 className="h-4 w-4 mr-1" />
-              Delete
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowSettings(true)}
-              title="Provider settings"
-            >
-              <Settings className="h-4 w-4 mr-1" />
-              {activeLabel || "Settings"}
-            </Button>
+    <div className={`${shell} flex flex-col`}>
+      {/* Faded in, as it is drawn only once the window has grown to its full size */}
+      <div className="gq-fade-in flex min-h-0 flex-1 flex-col">
+        <SettingsSheet open={showSettings} onOpenChange={setShowSettings} onChanged={setSettings} />
+
+        {/* Header: drags the window; chat title on the left, icon buttons on the right */}
+        <div
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-2"
+        >
+          <ChatSwitcher
+            conversations={conversations}
+            currentId={currentId}
+            disabled={isLoading}
+            onSelect={selectConversation}
+            onDelete={deleteChat}
+          />
+          <div className="flex shrink-0 gap-0.5">
+            <IconButton label="New chat" shortcut={`${MOD}N`} onClick={newChat} disabled={isLoading}>
+              <Plus />
+            </IconButton>
+            <IconButton label="Collapse to bar" shortcut="Esc" onClick={collapse}>
+              <Minimize2 />
+            </IconButton>
+            <IconButton label="Settings" shortcut={`${MOD},`} onClick={openSettings}>
+              <Settings2 />
+            </IconButton>
           </div>
         </div>
 
-        {startupNotices.map((notice) => (
-          <div key={notice} className="mb-3 p-3 rounded-lg bg-muted border text-xs text-muted-foreground">
-            {notice}
-          </div>
-        ))}
+        {/* Thread */}
+        <div
+          ref={threadRef}
+          onScroll={onThreadScroll}
+          aria-label="Conversation"
+          aria-busy={isLoading}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto flex min-h-full w-full max-w-[640px] flex-col gap-5 px-5 py-6">
+            {isEmpty && (
+              <div className="m-auto flex flex-col items-center gap-2 text-muted-foreground">
+                <Ghost aria-hidden="true" className="h-6 w-6 opacity-60" />
+                <p className="text-[13px]">Ask anything</p>
+              </div>
+            )}
 
-        {/* Message thread */}
-        <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto mb-4 space-y-3">
-          {shownMessages.map((msg) =>
-            msg.role === "user" ? (
-              <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+            {startupNotices.map((notice) => (
+              <div key={notice} role="status" className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+                {notice}
+              </div>
+            ))}
+
+            {shownMessages.map((msg) =>
+              msg.role === "user" ? (
+                <div
+                  key={msg.id}
+                  className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed"
+                >
                   {msg.content}
                 </div>
-              </div>
-            ) : (
-              <div key={msg.id} className="rounded-lg bg-muted/50 border p-4 group">
-                <Markdown text={msg.content} />
-                <div className="mt-2 flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
-                    title="Copy"
+              ) : (
+                <div key={msg.id} className="group flex flex-col gap-1">
+                  <Markdown text={msg.content} />
+                  <div
+                    className={`-ml-1.5 flex items-center gap-0.5 ${
+                      msg.id === lastAssistantId ? "" : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
+                    }`}
                   >
-                    {copiedStates[`msg-${msg.id}`] ? (
-                      <Check className="h-4 w-4" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </Button>
-                  {msg.id === lastAssistantId && !isLoading && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => send("", true)}
-                      title="Regenerate"
+                    <IconButton
+                      label={copiedStates[`msg-${msg.id}`] ? "Copied" : "Copy reply"}
+                      className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
+                      onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
                     >
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
-                  )}
-                  {msg.status === "cancelled" && (
-                    <span className="text-xs text-muted-foreground">(incomplete)</span>
-                  )}
+                      {copiedStates[`msg-${msg.id}`] ? <Check /> : <Copy />}
+                    </IconButton>
+                    {msg.id === lastAssistantId && !isLoading && (
+                      <IconButton
+                        label="Regenerate reply"
+                        className="h-7 w-7 [&_svg]:h-[15px] [&_svg]:w-[15px]"
+                        onClick={() => send("", true)}
+                      >
+                        <RefreshCw />
+                      </IconButton>
+                    )}
+                    {msg.status === "cancelled" && (
+                      <span className="ml-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        Incomplete
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )
-          )}
+              )
+            )}
 
-          {pendingUser && (
-            <div className="flex justify-end">
-              <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+            {pendingUser && (
+              <div className="max-w-[80%] self-end whitespace-pre-wrap rounded-[14px] bg-muted px-3 py-2 text-sm leading-relaxed">
                 {pendingUser}
               </div>
-            </div>
-          )}
+            )}
 
-          {isLoading && (
-            <div className="rounded-lg bg-muted/50 border p-4">
-              {response ? (
+            {isLoading &&
+              (response ? (
                 <Markdown text={response} />
               ) : (
-                <span className="text-sm text-muted-foreground">Thinking...</span>
-              )}
-            </div>
-          )}
+                <span className="animate-pulse text-sm text-muted-foreground">Thinking…</span>
+              ))}
+
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-3 rounded-lg bg-destructive/10 py-2 pl-3 pr-1.5 text-[13px] text-destructive"
+              >
+                <p className="min-w-0 flex-1 py-0.5">{error}</p>
+                {/settings/i.test(error) && (
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="shrink-0 rounded py-0.5 font-medium underline-offset-2 outline-none hover:underline focus-visible:underline"
+                  >
+                    Open Settings
+                  </button>
+                )}
+                <IconButton
+                  label="Dismiss"
+                  className="h-6 w-6 text-destructive hover:bg-destructive/10 hover:text-destructive [&_svg]:h-3.5 [&_svg]:w-3.5"
+                  onClick={() => setError("")}
+                >
+                  <X />
+                </IconButton>
+              </div>
+            )}
+          </div>
+        </div>
+        <div aria-live="polite" className="sr-only">
+          {announcement}
         </div>
 
-        {/* Error Display */}
-        {error && (
-          <div className="mb-4 p-4 rounded-lg bg-destructive/10 border border-destructive/20">
-            <div className="text-sm text-destructive">{error}</div>
-          </div>
-        )}
-
-        {/* Input Area */}
-        <div className="w-full flex-shrink-0">
+        {/* Composer */}
+        <div className="shrink-0 px-4 pb-4">
           <ChatInput
+            variant="unstyled"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onSubmit={handleSubmit}
             loading={isLoading}
             onStop={handleStop}
+            className="mx-auto max-w-[672px] flex-col items-stretch gap-1.5 rounded-xl border border-border bg-field px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-primary/50"
           >
-            <ChatInputTextArea ref={inputRef} placeholder="Type your question here" />
-            <ChatInputSubmit />
+            <ChatInputTextArea
+              ref={inputRef}
+              variant="unstyled"
+              aria-label="Message"
+              placeholder={messages.length > 0 ? "Ask a follow-up…" : "Ask anything…"}
+              className="max-h-40 min-h-0 rounded-none bg-transparent p-0 text-sm leading-relaxed placeholder:text-muted-foreground"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <ModelPicker
+                view={settings}
+                open={pickerOpen}
+                onOpenChange={setPickerOpen}
+                onPicked={setSettings}
+                onManage={openSettings}
+                onError={setError}
+              />
+              {isLoading ? (
+                <IconButton
+                  label="Stop"
+                  side="top"
+                  className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
+                  onClick={handleStop}
+                >
+                  <Square />
+                </IconButton>
+              ) : (
+                <IconButton
+                  label="Send"
+                  shortcut="↵"
+                  side="top"
+                  disabled={!canSend}
+                  className="h-8 w-8 rounded-lg bg-primary text-white hover:bg-primary/90 hover:text-white disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleSubmit}
+                >
+                  <ArrowUp />
+                </IconButton>
+              )}
+            </div>
           </ChatInput>
         </div>
       </div>

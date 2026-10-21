@@ -14,6 +14,17 @@ fn config_makes_the_window_a_hidden_frameless_always_on_top_panel() {
 }
 
 #[test]
+fn window_is_transparent_for_the_rounded_translucent_shell() {
+    let conf: serde_json::Value =
+        serde_json::from_str(include_str!("../../src-tauri/tauri.conf.json")).unwrap();
+    assert_eq!(conf["app"]["windows"][0]["transparent"], true);
+    // A transparent webview on macOS needs the private API, which must also be enabled
+    // as a tauri feature in src-tauri/Cargo.toml.
+    assert_eq!(conf["app"]["macOSPrivateApi"], true);
+    assert!(include_str!("../../src-tauri/Cargo.toml").contains("macos-private-api"));
+}
+
+#[test]
 fn frameless_window_may_be_dragged_by_its_header() {
     let caps = include_str!("../../src-tauri/capabilities/default.json");
     assert!(caps.contains("core:window:allow-start-dragging"));
