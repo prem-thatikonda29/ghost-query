@@ -1,21 +1,26 @@
 mod conversation;
+mod keystore;
+mod provider;
+mod settings;
 mod sse;
 
-use conversation::{Conversation, ConversationMessage};
-use futures_util::StreamExt;
+use conversation::{ChatMessage, Conversation, ConversationMessage};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
+use provider::{ModelInfo, Outcome};
 use reqwest::Client;
-use sse::SseParser;
+use serde::Serialize;
+use settings::Settings;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
-// Temporary: Phase 3 replaces the proxy with direct, key-based provider calls.
-const DEFAULT_PROXY_URL: &str = "https://proxy-server-2smrrg86i-prem-thatikondas-projects.vercel.app";
+const SYSTEM_PROMPT: &str = "You are Ghost Query, a concise assistant. Answer directly. \
+Use Markdown for structure and fenced code blocks for code.";
 
 #[derive(Default)]
 struct ChatState {
@@ -26,105 +31,73 @@ struct ChatState {
     next_id: AtomicU64,
 }
 
-enum Outcome {
-    Done(String),
-    /// Carries whatever was streamed before the user pressed Stop.
-    Cancelled(String),
-    Failed(String),
+#[derive(Serialize)]
+struct SettingsView {
+    base_url: String,
+    model: String,
+    has_key: bool,
 }
 
-async fn stream_from_proxy<R: Runtime>(
-    client: &Client,
-    url: &str,
-    body: serde_json::Value,
-    token: &CancellationToken,
-    app: &AppHandle<R>,
-) -> Outcome {
-    let mut full = String::new();
-
-    let response = tokio::select! {
-        _ = token.cancelled() => return Outcome::Cancelled(full),
-        result = client.post(url).json(&body).send() => match result {
-            Ok(r) => r,
-            Err(e) => return Outcome::Failed(format!("Failed to connect to proxy server: {e}")),
-        },
-    };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Failed to read error response".to_string());
-        return Outcome::Failed(format!("Proxy server returned error: {status} - {text}"));
-    }
-
-    let mut stream = response.bytes_stream();
-    let mut parser = SseParser::new();
-
-    loop {
-        let next = tokio::select! {
-            _ = token.cancelled() => return Outcome::Cancelled(full),
-            next = stream.next() => next,
-        };
-        let Some(chunk) = next else {
-            // Stream closed without [DONE]; keep what we have.
-            return Outcome::Done(full);
-        };
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => return Outcome::Failed(format!("Stream error: {e}")),
-        };
-
-        for data in parser.push(&chunk) {
-            if data == "[DONE]" {
-                return Outcome::Done(full);
-            }
-            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) else {
-                continue;
-            };
-            if let Some(content) = parsed["content"].as_str() {
-                full.push_str(content);
-                let _ = app.emit("ai-response-chunk", content);
-            } else if let Some(error) = parsed["error"].as_str() {
-                return Outcome::Failed(format!("Proxy server error: {error}"));
-            }
-        }
-    }
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("settings.json"))
+        .map_err(|e| format!("No config directory: {e}"))
 }
 
 #[tauri::command]
-async fn ask_ai_stream(
-    prompt: String,
-    model: String,
-    app: AppHandle,
-    state: State<'_, ChatState>,
-) -> Result<(), String> {
-    let proxy_url = std::env::var("PROXY_URL").unwrap_or_else(|_| DEFAULT_PROXY_URL.to_string());
+fn get_settings(app: AppHandle) -> Result<SettingsView, String> {
+    let settings = Settings::load(&settings_path(&app)?);
+    Ok(SettingsView {
+        base_url: settings.base_url,
+        model: settings.model,
+        has_key: keystore::get()?.is_some(),
+    })
+}
+
+#[tauri::command]
+fn save_settings(app: AppHandle, base_url: String, model: String) -> Result<(), String> {
+    let settings = Settings { base_url, model }.normalized();
+    settings.validate()?;
+    settings.save(&settings_path(&app)?)
+}
+
+#[tauri::command]
+fn set_api_key(key: String) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("API key must not be empty".to_string());
+    }
+    keystore::set(key)
+}
+
+#[tauri::command]
+fn clear_api_key() -> Result<(), String> {
+    keystore::clear()
+}
+
+#[tauri::command]
+async fn list_models(app: AppHandle) -> Result<Vec<ModelInfo>, String> {
+    let settings = Settings::load(&settings_path(&app)?).normalized();
+    let key = keystore::get()?;
+    provider::fetch_models(&Client::new(), &settings.base_url, key.as_deref()).await
+}
+
+#[tauri::command]
+async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatState>) -> Result<(), String> {
+    let settings = Settings::load(&settings_path(&app)?).normalized();
+    let key = keystore::get()?;
+    if key.is_none() && provider::is_openrouter(&settings.base_url) {
+        let _ = app.emit(
+            "ai-response-error",
+            "No API key set. Open Settings and add your OpenRouter key (free to create at openrouter.ai).",
+        );
+        return Ok(());
+    }
 
     // History is only read here; it is written once the exchange has finished.
-    let contextual_prompt = state.conversation.lock().unwrap().build_prompt(&prompt);
-
-    let (url, body) = if model.starts_with("gemini") {
-        (
-            format!("{proxy_url}/api/gemini"),
-            serde_json::json!({
-                "model": model,
-                "prompt": contextual_prompt,
-                "temperature": 0.7,
-                "maxTokens": 2048,
-                "stream": true
-            }),
-        )
-    } else if model == "sonar" {
-        (
-            format!("{proxy_url}/api/perplexity"),
-            serde_json::json!({ "model": model, "prompt": contextual_prompt, "stream": true }),
-        )
-    } else {
-        let _ = app.emit("ai-response-error", format!("Unsupported model: {model}"));
-        return Ok(());
-    };
+    let mut messages = vec![ChatMessage { role: "system".into(), content: SYSTEM_PROMPT.into() }];
+    messages.extend(state.conversation.lock().unwrap().history_for_request(&prompt));
 
     let token = CancellationToken::new();
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
@@ -132,7 +105,7 @@ async fn ask_ai_stream(
         previous.cancel();
     }
 
-    let outcome = stream_from_proxy(&Client::new(), &url, body, &token, &app).await;
+    let outcome = provider::stream_chat(&Client::new(), &settings, key.as_deref(), &messages, &token, &app).await;
 
     {
         let mut active = state.active.lock().unwrap();
@@ -190,7 +163,12 @@ pub fn run() {
             ask_ai_stream,
             get_conversation_history,
             clear_conversation,
-            stop_streaming
+            stop_streaming,
+            get_settings,
+            save_settings,
+            set_api_key,
+            clear_api_key,
+            list_models
         ])
         .setup(move |app| {
             if cfg!(debug_assertions) {
@@ -243,71 +221,3 @@ pub fn run() {
     drop(manager);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    /// Serves one SSE chunk, then stalls forever (a slow model).
-    async fn stalling_server() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = sock.read(&mut buf).await;
-            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
-            let event = "data: {\"content\":\"partial\"}\n\n";
-            let _ = sock
-                .write_all(format!("{head}{:x}\r\n{event}\r\n", event.len()).as_bytes())
-                .await;
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        });
-        format!("http://{addr}")
-    }
-
-    #[tokio::test]
-    async fn stop_aborts_a_stalled_stream_and_keeps_partial_output() {
-        let url = stalling_server().await;
-        let app = tauri::test::mock_app();
-        let token = CancellationToken::new();
-
-        let canceller = token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            canceller.cancel();
-        });
-
-        let started = std::time::Instant::now();
-        let outcome = stream_from_proxy(
-            &Client::new(),
-            &url,
-            serde_json::json!({}),
-            &token,
-            app.handle(),
-        )
-        .await;
-
-        assert!(started.elapsed().as_secs() < 5, "Stop did not abort the stream");
-        match outcome {
-            Outcome::Cancelled(partial) => assert_eq!(partial, "partial"),
-            Outcome::Done(_) => panic!("expected Cancelled, got Done"),
-            Outcome::Failed(e) => panic!("expected Cancelled, got Failed: {e}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn unreachable_server_fails_instead_of_hanging() {
-        let app = tauri::test::mock_app();
-        let outcome = stream_from_proxy(
-            &Client::new(),
-            "http://127.0.0.1:9",
-            serde_json::json!({}),
-            &CancellationToken::new(),
-            app.handle(),
-        )
-        .await;
-        assert!(matches!(outcome, Outcome::Failed(_)));
-    }
-}

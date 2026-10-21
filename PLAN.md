@@ -14,27 +14,31 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [x] Rust unit tests for SSE parser
 - [x] Verify: `cargo check`/`cargo test` (11 pass), frontend `vite build`
 
-## Phase 1: Proper history
+## Phase 1: Provider, keys, proxy removal  (moved ahead of history so the app can make real requests)
+- [x] One OpenAI-compatible streaming client (base URL up to `/v1`, append `/chat/completions`)
+- [x] OpenRouter default; any OpenAI-compatible base URL (Ollama, Groq...) via Settings; model list fetched from `{base}/models`
+- [x] Settings view: base URL, model ID, key; key in OS keychain via `keyring` (frontend can write / check-exists, never read)
+- [x] Map errors: 401 bad key, 402/credits, 429 limits, mid-stream `error.metadata.error_type`
+- [x] Delete `proxy-server/` and the hardcoded Vercel URL
+
+- [x] Structured `[system, ...history, user]` messages instead of pasted text (partial Phase 2 history work)
+- [x] Removed dead frontend formatters (they flattened all Markdown); README rewritten
+- [ ] Live test with a real key (needs user)
+
+## Phase 2: Proper history (SQLite)
 - [ ] SQLite (`rusqlite`) in the app data dir; tables `conversations`, `messages` (role, content, status, timestamps)
 - [ ] Commands: list/create/rename/delete conversation, load messages
-- [ ] Send structured `[{role, content}]` + optional system prompt (no pasted text)
+- [x] Send structured `[{role, content}]` (done in provider phase); [ ] editable system prompt
 - [ ] Token-budget trimming (keep system prompt + latest turns)
 - [ ] Retry/regenerate replaces the reply
 - [ ] Frontend: conversation list; delete `formatResponse` / `cleanCurrencyAndPercent` regex hacks
 
-## Phase 2: Ghost window
+## Phase 3: Ghost window
 - [ ] Frameless, always-on-top, skip taskbar/Dock, all workspaces
 - [ ] `set_content_protected(true)` (macOS 15+ ScreenCaptureKit may ignore it; do not promise more than "requests exclusion")
 - [ ] `tauri-plugin-global-shortcut` replaces the hand-rolled hotkey thread
 - [ ] Windows: OR in `WS_EX_TOOLWINDOW` instead of overwriting styles
 - [ ] Decide focus model (must accept typing); `tauri-nspanel` only if plain Tauri settings misbehave
-
-## Phase 3: Provider, keys, proxy removal
-- [ ] `Provider` trait; one OpenAI-compatible streaming client (base URL up to `/v1`, append `/chat/completions`)
-- [ ] Presets: OpenRouter (default), Ollama (local), custom base URL
-- [ ] Settings view: base URL, model ID, key; key in OS keychain via `keyring` (frontend can write / check-exists, never read)
-- [ ] Map errors: 401 bad key, 402/credits, 429 limits, mid-stream `error.metadata.error_type`
-- [ ] Delete `proxy-server/` and the hardcoded Vercel URL
 
 ## Phase 4+: Later
 - [ ] FTS5 search over history

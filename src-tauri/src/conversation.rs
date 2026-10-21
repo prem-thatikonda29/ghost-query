@@ -12,6 +12,13 @@ pub struct ConversationMessage {
     pub timestamp: u64,
 }
 
+/// Wire format for chat-completions requests.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
 #[derive(Debug, Default)]
 pub struct Conversation {
     messages: VecDeque<ConversationMessage>,
@@ -39,19 +46,15 @@ impl Conversation {
         self.messages.clear();
     }
 
-    /// Prompt for the next request. Does not modify history: a request that
-    /// fails must not leave a dangling user message behind.
-    pub fn build_prompt(&self, prompt: &str) -> String {
-        if self.messages.is_empty() {
-            return prompt.to_string();
-        }
-        let context = self
-            .messages
+    /// Messages for the next request: stored history plus the new user turn, as
+    /// structured chat messages. Does not modify history: a request that fails
+    /// must not leave a dangling user message behind.
+    pub fn history_for_request(&self, prompt: &str) -> Vec<ChatMessage> {
+        self.messages
             .iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("Previous conversation:\n{}\n\nUser: {}", context, prompt)
+            .map(|m| ChatMessage { role: m.role.clone(), content: m.content.clone() })
+            .chain(std::iter::once(ChatMessage { role: "user".into(), content: prompt.to_string() }))
+            .collect()
     }
 
     /// Record a finished (or cancelled-with-partial-output) exchange.
@@ -71,23 +74,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_without_history_is_unchanged() {
-        assert_eq!(Conversation::default().build_prompt("hi"), "hi");
+    fn request_without_history_is_just_the_user_turn() {
+        let msgs = Conversation::default().history_for_request("hi");
+        assert_eq!(msgs, vec![ChatMessage { role: "user".into(), content: "hi".into() }]);
     }
 
     #[test]
-    fn build_prompt_does_not_mutate_history() {
+    fn building_a_request_does_not_mutate_history() {
         let c = Conversation::default();
-        let _ = c.build_prompt("hi");
+        let _ = c.history_for_request("hi");
         assert!(c.messages().is_empty());
     }
 
     #[test]
-    fn commit_then_prompt_includes_context() {
+    fn commit_then_request_keeps_roles_and_order() {
         let mut c = Conversation::default();
         c.commit_exchange("q1", "a1");
-        let p = c.build_prompt("q2");
-        assert!(p.contains("user: q1") && p.contains("assistant: a1") && p.ends_with("User: q2"));
+        let roles: Vec<_> = c.history_for_request("q2").into_iter().map(|m| (m.role, m.content)).collect();
+        assert_eq!(
+            roles,
+            vec![
+                ("user".to_string(), "q1".to_string()),
+                ("assistant".to_string(), "a1".to_string()),
+                ("user".to_string(), "q2".to_string()),
+            ]
+        );
     }
 
     #[test]

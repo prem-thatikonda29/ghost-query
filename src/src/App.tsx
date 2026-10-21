@@ -7,8 +7,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
-import { ModelSelector } from "./components/ui/model-selector";
-import { Trash2, MessageSquare, Copy, Check } from "lucide-react";
+import { SettingsPanel } from "./components/ui/settings-panel";
+import { Trash2, MessageSquare, Copy, Check, Settings } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 interface ConversationMessage {
@@ -27,7 +27,8 @@ function App() {
     ConversationMessage[]
   >([]);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("gemini-2.0-flash-exp");
+  const [showSettings, setShowSettings] = useState(false);
+  const [modelName, setModelName] = useState("");
   const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>(
     {}
   );
@@ -77,9 +78,16 @@ function App() {
     }
   }, []);
 
-  // Load conversation history on mount
+  // Load conversation history and provider settings on mount
   useEffect(() => {
     loadConversationHistory();
+    invoke<{ model: string; has_key: boolean }>("get_settings")
+      .then((view) => {
+        setModelName(view.model);
+        // First run: no key yet, so open settings straight away.
+        if (!view.has_key) setShowSettings(true);
+      })
+      .catch((err) => console.error("Failed to load settings:", err));
   }, []);
 
   const loadConversationHistory = async () => {
@@ -121,7 +129,6 @@ function App() {
       try {
         await invoke("ask_ai_stream", {
           prompt: message,
-          model: selectedModel,
         });
       } catch (err) {
         setError(err as string);
@@ -161,119 +168,6 @@ function App() {
     } catch (err) {
       console.error("Failed to copy text:", err);
     }
-  };
-
-  // Function to normalize streaming text (remove invisible characters)
-  const normalizeStreamingText = (text: string): string => {
-    if (!text) return text;
-    return (
-      text
-        // convert zero-width joiners/spaces to a normal space
-        .replace(/[\u200b\u200c\u200d\u2060]/g, " ")
-        // normalize non-breaking/narrow spaces to a normal space
-        .replace(/[\u00a0\u202f]/g, " ")
-    );
-  };
-
-  // Function to clean up currency and percentage formatting
-  const cleanCurrencyAndPercent = (text: string): string => {
-    if (!text) return text;
-
-    // Fix common currency formatting issues
-    let cleaned = text
-      // Fix broken currency like "$517.93" -> "$517.93"
-      .replace(/\$(\d+\.?\d*)/g, "$$$1")
-      // Fix percentage formatting
-      .replace(/(\d+(?:\.\d+)?)\s*%/g, "$1%")
-      // Fix broken numbers with missing spaces
-      .replace(/(\d+)([A-Za-z])/g, "$1 $2")
-      // Fix broken decimal points
-      .replace(/(\d+)\.(\d+)/g, "$1.$2")
-      // Normalize multiple spaces
-      .replace(/\s+/g, " ")
-      // Fix broken sentences
-      .replace(/([.!?])([A-Z])/g, "$1 $2");
-
-    return cleaned;
-  };
-
-  // Function to parse and format JSON responses
-  const formatResponse = (response: string) => {
-    try {
-      // Clean the response first - remove any extra text before/after JSON
-      let cleanResponse = response.trim();
-
-      // Try to find JSON object boundaries
-      const jsonStart = cleanResponse.indexOf("{");
-      const jsonEnd = cleanResponse.lastIndexOf("}");
-
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        cleanResponse = cleanResponse.substring(jsonStart, jsonEnd + 1);
-      }
-
-      // Try to parse as JSON
-      const parsed = JSON.parse(cleanResponse);
-
-      // Check if it's a structured response with our expected format
-      if (
-        parsed.summary &&
-        parsed.details &&
-        parsed.key_points &&
-        parsed.status
-      ) {
-        // Clean up the content before formatting
-        const cleanSummary = cleanCurrencyAndPercent(
-          normalizeStreamingText(parsed.summary)
-        );
-        const cleanDetails = cleanCurrencyAndPercent(
-          normalizeStreamingText(parsed.details)
-        );
-        const cleanKeyPoints = parsed.key_points.map((point: string) =>
-          cleanCurrencyAndPercent(normalizeStreamingText(point))
-        );
-
-        return `## ${cleanSummary}\n\n${cleanDetails}\n\n### Key Points\n\n${cleanKeyPoints
-          .map((point: string) => `- ${point}`)
-          .join("\n")}`;
-      }
-    } catch (e) {
-      // If JSON parsing fails, try to extract key information manually
-      console.log("JSON parsing failed, attempting manual extraction");
-
-      // Look for common patterns in the malformed response
-      const summaryMatch = response.match(/"summary":\s*"([^"]+)"/);
-      const detailsMatch = response.match(/"details":\s*"([^"]+)"/);
-      const keyPointsMatch = response.match(/"key_points":\s*\[(.*?)\]/);
-
-      if (summaryMatch && detailsMatch) {
-        let formatted = `## ${cleanCurrencyAndPercent(
-          normalizeStreamingText(summaryMatch[1])
-        )}\n\n${cleanCurrencyAndPercent(
-          normalizeStreamingText(detailsMatch[1])
-        )}`;
-
-        if (keyPointsMatch) {
-          const points = keyPointsMatch[1]
-            .split(",")
-            .map((point) => point.trim().replace(/"/g, ""))
-            .filter((point) => point.length > 0)
-            .map((point) =>
-              cleanCurrencyAndPercent(normalizeStreamingText(point))
-            );
-
-          if (points.length > 0) {
-            formatted += `\n\n### Key Points\n\n${points
-              .map((point) => `- ${point}`)
-              .join("\n")}`;
-          }
-        }
-
-        return formatted;
-      }
-    }
-
-    // If all else fails, apply basic cleaning to the raw response
-    return cleanCurrencyAndPercent(normalizeStreamingText(response));
   };
 
   // Custom components for ReactMarkdown
@@ -333,11 +227,15 @@ function App() {
             )}
           </div>
           <div className="flex gap-2">
-            <ModelSelector
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              className="w-48"
-            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowSettings(!showSettings)}
+              title="Provider settings"
+            >
+              <Settings className="h-4 w-4 mr-1" />
+              {modelName || "Settings"}
+            </Button>
             {conversationHistory.length > 0 && (
               <Button
                 variant="outline"
@@ -356,6 +254,13 @@ function App() {
             )}
           </div>
         </div>
+
+        {showSettings && (
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            onSaved={(view) => setModelName(view.model)}
+          />
+        )}
 
         {/* Conversation History */}
         {showHistory && conversationHistory.length > 0 && (
@@ -378,7 +283,7 @@ function App() {
                       variant="ghost"
                       className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
                       onClick={() =>
-                        copyToClipboard(formatResponse(msg.content), "full")
+                        copyToClipboard(msg.content, "full")
                       }
                     >
                       <Copy className="h-3 w-3" />
@@ -407,7 +312,7 @@ function App() {
                   code: CodeBlock,
                 }}
               >
-                {formatResponse(response)}
+                {response}
               </ReactMarkdown>
               {isLoading && !response && (
                 <span className="text-muted-foreground">Thinking...</span>
@@ -419,7 +324,7 @@ function App() {
                     size="sm"
                     variant="ghost"
                     onClick={() =>
-                      copyToClipboard(formatResponse(response), "full")
+                      copyToClipboard(response, "full")
                     }
                   >
                     {fullResponseCopied ? (
