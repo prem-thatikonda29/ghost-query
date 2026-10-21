@@ -8,7 +8,7 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 - **Keys stay in the keychain** — One entry per provider in the macOS Keychain / Windows Credential Manager. The UI can save or remove a key but never reads it back, and the app never writes it to disk.
 - **Streaming responses** — Real-time token-by-token output, with a Stop button that cancels the request.
 - **Global hotkey** — Ctrl+Shift+Space shows or hides the window; no Dock icon on macOS.
-- **Conversation history** — Browse, copy, or clear the current conversation.
+- **Persistent conversations** — Chats are saved in a local SQLite database, with a conversation switcher, New chat, Delete and Regenerate. Long chats are trimmed to a token budget when sent.
 - **Markdown rendering** — Syntax-highlighted code blocks with copy buttons.
 
 ## Tech Stack
@@ -32,7 +32,8 @@ A Tauri desktop app for chatting with any OpenAI-compatible model provider (Open
 │       ├── providers.rs  # Built-in provider presets
 │       ├── keystore.rs   # Per-provider API keys in the OS keychain
 │       ├── settings.rs   # Active provider, models, custom URL (non-secret)
-│       ├── conversation.rs
+│       ├── conversation.rs  # Request building, token-budget trimming
+│       ├── db.rs         # SQLite conversations and messages
 │       └── sse.rs        # Server-sent-events parser
 ├── PLAN.md               # Phase checklist
 └── Cargo.toml            # Rust workspace

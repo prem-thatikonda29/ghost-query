@@ -1,16 +1,10 @@
+//! Request-side conversation logic. Persistence lives in `db.rs`.
+
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use uuid::Uuid;
 
-const MAX_MESSAGES: usize = 20;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ConversationMessage {
-    pub id: String,
-    pub role: String, // "user" or "assistant"
-    pub content: String,
-    pub timestamp: u64,
-}
+/// Approximate token budget for history sent with each request. Conservative so it
+/// fits small-context models; per-model limits can replace it later.
+pub const HISTORY_TOKEN_BUDGET: usize = 6000;
 
 /// Wire format for chat-completions requests.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -19,103 +13,84 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-#[derive(Debug, Default)]
-pub struct Conversation {
-    messages: VecDeque<ConversationMessage>,
+/// Rough estimate (about 4 characters per token plus per-message overhead).
+pub fn approx_tokens(text: &str) -> usize {
+    text.chars().count() / 4 + 4
 }
 
-fn message(role: &str, content: &str) -> ConversationMessage {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    ConversationMessage {
-        id: Uuid::new_v4().to_string(),
-        role: role.to_string(),
-        content: content.to_string(),
-        timestamp,
+/// Keeps the most recent messages that fit `budget`, always keeping the last one
+/// (the new user turn), and never starting the history on an assistant message.
+pub fn trim_history(mut history: Vec<ChatMessage>, budget: usize) -> Vec<ChatMessage> {
+    let mut used = 0;
+    let mut start = history.len();
+    for (i, message) in history.iter().enumerate().rev() {
+        let cost = approx_tokens(&message.content);
+        if start < history.len() && used + cost > budget {
+            break;
+        }
+        used += cost;
+        start = i;
     }
+    let mut kept = history.split_off(start);
+    while kept.len() > 1 && kept[0].role != "user" {
+        kept.remove(0);
+    }
+    kept
 }
 
-impl Conversation {
-    pub fn messages(&self) -> Vec<ConversationMessage> {
-        self.messages.iter().cloned().collect()
-    }
-
-    pub fn clear(&mut self) {
-        self.messages.clear();
-    }
-
-    /// Messages for the next request: stored history plus the new user turn, as
-    /// structured chat messages. Does not modify history: a request that fails
-    /// must not leave a dangling user message behind.
-    pub fn history_for_request(&self, prompt: &str) -> Vec<ChatMessage> {
-        self.messages
-            .iter()
-            .map(|m| ChatMessage { role: m.role.clone(), content: m.content.clone() })
-            .chain(std::iter::once(ChatMessage { role: "user".into(), content: prompt.to_string() }))
-            .collect()
-    }
-
-    /// Record a finished (or cancelled-with-partial-output) exchange.
-    pub fn commit_exchange(&mut self, user: &str, assistant: &str) {
-        self.messages.push_back(message("user", user));
-        if !assistant.is_empty() {
-            self.messages.push_back(message("assistant", assistant));
-        }
-        while self.messages.len() > MAX_MESSAGES {
-            self.messages.pop_front();
-        }
-    }
+/// `[system, ...trimmed history, new user turn]`.
+pub fn build_request_messages(system: &str, history: Vec<ChatMessage>, prompt: &str, budget: usize) -> Vec<ChatMessage> {
+    let mut all = history;
+    all.push(ChatMessage { role: "user".into(), content: prompt.to_string() });
+    let mut messages = vec![ChatMessage { role: "system".into(), content: system.to_string() }];
+    messages.extend(trim_history(all, budget));
+    messages
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn request_without_history_is_just_the_user_turn() {
-        let msgs = Conversation::default().history_for_request("hi");
-        assert_eq!(msgs, vec![ChatMessage { role: "user".into(), content: "hi".into() }]);
+    fn m(role: &str, content: &str) -> ChatMessage {
+        ChatMessage { role: role.into(), content: content.into() }
     }
 
     #[test]
-    fn building_a_request_does_not_mutate_history() {
-        let c = Conversation::default();
-        let _ = c.history_for_request("hi");
-        assert!(c.messages().is_empty());
+    fn short_history_is_kept_whole_with_system_first_and_user_last() {
+        let out = build_request_messages("sys", vec![m("user", "q1"), m("assistant", "a1")], "q2", 1000);
+        let seq: Vec<_> = out.iter().map(|x| (x.role.as_str(), x.content.as_str())).collect();
+        assert_eq!(seq, vec![("system", "sys"), ("user", "q1"), ("assistant", "a1"), ("user", "q2")]);
     }
 
     #[test]
-    fn commit_then_request_keeps_roles_and_order() {
-        let mut c = Conversation::default();
-        c.commit_exchange("q1", "a1");
-        let roles: Vec<_> = c.history_for_request("q2").into_iter().map(|m| (m.role, m.content)).collect();
-        assert_eq!(
-            roles,
-            vec![
-                ("user".to_string(), "q1".to_string()),
-                ("assistant".to_string(), "a1".to_string()),
-                ("user".to_string(), "q2".to_string()),
-            ]
-        );
+    fn no_history_is_just_system_and_the_prompt() {
+        let out = build_request_messages("sys", vec![], "hi", 1000);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1], m("user", "hi"));
     }
 
     #[test]
-    fn empty_assistant_reply_is_not_stored() {
-        let mut c = Conversation::default();
-        c.commit_exchange("q", "");
-        assert_eq!(c.messages().len(), 1);
+    fn oldest_messages_are_dropped_first_when_over_budget() {
+        let big = "x".repeat(400); // ~104 tokens each
+        let history = vec![m("user", &big), m("assistant", &big), m("user", &big), m("assistant", &big)];
+        let out = trim_history([history, vec![m("user", "new")]].concat(), 250);
+        // Budget fits the new prompt plus about two big messages; history must start on a user turn.
+        assert_eq!(out.last().unwrap().content, "new");
+        assert_eq!(out.first().unwrap().role, "user");
+        assert!(out.len() < 5);
     }
 
     #[test]
-    fn history_is_capped() {
-        let mut c = Conversation::default();
-        for i in 0..30 {
-            c.commit_exchange(&format!("q{i}"), &format!("a{i}"));
-        }
-        let msgs = c.messages();
-        assert_eq!(msgs.len(), MAX_MESSAGES);
-        assert_eq!(msgs.last().unwrap().content, "a29");
+    fn the_new_prompt_is_kept_even_if_it_alone_exceeds_the_budget() {
+        let huge = "x".repeat(10_000);
+        let out = trim_history(vec![m("user", "old"), m("assistant", "older"), m("user", &huge)], 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content, huge);
+    }
+
+    #[test]
+    fn history_never_starts_with_an_assistant_message() {
+        let out = trim_history(vec![m("user", "a"), m("assistant", "b"), m("user", "c")], 2 * approx_tokens("b") + 1);
+        assert_eq!(out.first().unwrap().role, "user");
     }
 }

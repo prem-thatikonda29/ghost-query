@@ -28,12 +28,15 @@ Verified facts (checked against live docs/API on 2026-10-21) are in "Reference f
 - [ ] User to test multi-provider Settings, then start history phase
 
 ## Phase 2: Proper history (SQLite)
-- [ ] SQLite (`rusqlite`) in the app data dir; tables `conversations`, `messages` (role, content, status, timestamps)
-- [ ] Commands: list/create/rename/delete conversation, load messages
-- [x] Send structured `[{role, content}]` (done in provider phase); [ ] editable system prompt
-- [ ] Token-budget trimming (keep system prompt + latest turns)
-- [ ] Retry/regenerate replaces the reply
-- [ ] Frontend: conversation list; delete `formatResponse` / `cleanCurrencyAndPercent` regex hacks
+- [x] SQLite (`rusqlite`, bundled) in the app data dir; versioned migrations (`PRAGMA user_version`); tables `conversations`, `messages` (role, content, status complete/cancelled, timestamps), WAL, foreign keys with cascade delete
+- [x] Commands: list/create (reuses an empty one)/rename/delete conversation, get messages
+- [x] Structured messages `[system, ...history, user]`; [ ] editable system prompt
+- [x] Token-budget trimming (approx chars/4, budget 6000, always keeps the new prompt, never starts on an assistant turn); [ ] per-model context from `/models`
+- [x] Regenerate replaces the last exchange atomically (failed regenerate keeps the old answer)
+- [x] Stopped replies are saved with `cancelled` status; nothing is written for failed/empty requests
+- [x] Basic frontend: message thread, conversation switcher, New chat, Delete, Regenerate; old in-memory history and regex hacks removed
+- [ ] Rename UI (backend command exists)
+- [ ] User to test, then Phase 3
 
 ## Phase 3: Ghost window
 - [ ] Frameless, always-on-top, skip taskbar/Dock, all workspaces

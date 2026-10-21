@@ -8,60 +8,105 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "./components/ui/button";
 import { SettingsPage, SettingsView } from "./components/ui/settings-page";
-import { Trash2, MessageSquare, Copy, Check, Settings } from "lucide-react";
+import { Trash2, Copy, Check, Settings, Plus, RefreshCw } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
-interface ConversationMessage {
+interface ConversationSummary {
   id: string;
-  role: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface StoredMessage {
+  id: number;
+  role: "user" | "assistant";
   content: string;
+  status: "complete" | "cancelled";
   timestamp: number;
 }
+
+const activeLabelFor = (view: SettingsView) => {
+  const active = view.providers.find((p) => p.id === view.active);
+  return active ? `${active.name} · ${active.model || "no model"}` : "";
+};
 
 function App() {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // Text streamed so far for the reply in flight (not stored until it finishes).
   const [response, setResponse] = useState("");
+  // The user's message while its reply is in flight (also not stored yet).
+  const [pendingUser, setPendingUser] = useState("");
+  const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState("");
-  const [conversationHistory, setConversationHistory] = useState<
-    ConversationMessage[]
-  >([]);
-  const [showHistory, setShowHistory] = useState(false);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [currentId, setCurrentId] = useState("");
+  const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [activeLabel, setActiveLabel] = useState("");
-  const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>(
-    {}
-  );
-  const [fullResponseCopied, setFullResponseCopied] = useState(false);
-  const responseRef = useRef<HTMLDivElement>(null);
+  const [copiedStates, setCopiedStates] = useState<{ [key: string]: boolean }>({});
+  const currentIdRef = useRef("");
+  const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Set up event listeners for streaming responses
+  const refreshConversations = async () => {
+    const list = await invoke<ConversationSummary[]>("list_conversations");
+    setConversations(list);
+    return list;
+  };
+
+  const loadMessages = async (id: string) => {
+    setMessages(await invoke<StoredMessage[]>("get_messages", { conversationId: id }));
+  };
+
+  const selectConversation = async (id: string) => {
+    currentIdRef.current = id;
+    setCurrentId(id);
+    setResponse("");
+    setPendingUser("");
+    setError("");
+    await loadMessages(id);
+  };
+
+  // Called from the stream listeners, which are registered once, so it reads the
+  // current conversation from a ref rather than from stale state.
+  const refresh = async () => {
+    if (!currentIdRef.current) return;
+    await Promise.all([loadMessages(currentIdRef.current), refreshConversations()]);
+  };
+
   useEffect(() => {
     const unlistenChunk = listen<string>("ai-response-chunk", (event) => {
       setResponse((prev) => prev + event.payload);
     });
 
-    const unlistenDone = listen<string>("ai-response-done", (_event) => {
+    const unlistenDone = listen<string>("ai-response-done", async () => {
+      await refresh();
+      setResponse("");
+      setPendingUser("");
+      setRegenerating(false);
       setIsLoading(false);
       setMessage("");
-      // Refresh conversation history after response is complete
-      loadConversationHistory();
     });
 
     const unlistenError = listen<string>("ai-response-error", (event) => {
       setError(event.payload);
+      setResponse("");
+      setPendingUser("");
+      setRegenerating(false);
       setIsLoading(false);
-      console.error("AI request failed:", event.payload);
     });
 
-    const unlistenCancelled = listen<string>(
-      "ai-response-cancelled",
-      (event) => {
-        setIsLoading(false);
-        loadConversationHistory();
-      }
-    );
+    const unlistenCancelled = listen<string>("ai-response-cancelled", async (event) => {
+      // A stopped reply with text is saved; the prompt then leaves the input box.
+      if (event.payload) setMessage("");
+      await refresh();
+      setResponse("");
+      setPendingUser("");
+      setRegenerating(false);
+      setIsLoading(false);
+    });
 
     return () => {
       unlistenChunk.then((unlisten) => unlisten());
@@ -71,114 +116,109 @@ function App() {
     };
   }, []);
 
-  // Auto-focus input when component mounts
+  // On mount: open the most recent conversation (or a fresh one) and load settings.
   useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, []);
+    inputRef.current?.focus();
+    (async () => {
+      try {
+        let list = await refreshConversations();
+        if (list.length === 0) {
+          await invoke("create_conversation");
+          list = await refreshConversations();
+        }
+        await selectConversation(list[0].id);
+      } catch (err) {
+        setError(String(err));
+      }
+    })();
 
-  // Load conversation history and provider settings on mount
-  useEffect(() => {
-    loadConversationHistory();
     invoke<SettingsView>("get_settings")
       .then((view) => {
-        const active = view.providers.find((p) => p.id === view.active);
-        setActiveLabel(active ? `${active.name} · ${active.model || "no model"}` : "");
+        setActiveLabel(activeLabelFor(view));
         // First run: the active provider needs a key, so open settings straight away.
+        const active = view.providers.find((p) => p.id === view.active);
         if (active && active.needs_key && !active.has_key) setShowSettings(true);
       })
       .catch((err) => console.error("Failed to load settings:", err));
   }, []);
 
-  const loadConversationHistory = async () => {
-    try {
-      const history = await invoke<ConversationMessage[]>(
-        "get_conversation_history"
-      );
-      setConversationHistory(history);
-    } catch (err) {
-      console.error("Failed to load conversation history:", err);
-    }
-  };
-
-  const clearConversation = async () => {
-    try {
-      await invoke("clear_conversation");
-      setConversationHistory([]);
-      setResponse("");
-      setError("");
-    } catch (err) {
-      console.error("Failed to clear conversation:", err);
-    }
-  };
-
-  // Auto-scroll to bottom when response updates
   useEffect(() => {
-    if (responseRef.current) {
-      responseRef.current.scrollTop = responseRef.current.scrollHeight;
+    if (threadRef.current) {
+      threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
-  }, [response]);
+  }, [messages, response, pendingUser]);
 
-  const handleSubmit = async () => {
-    if (message.trim()) {
-      console.log("Message:", message);
-      setIsLoading(true);
-      setError("");
-      setResponse("");
+  const newChat = async () => {
+    try {
+      const created = await invoke<ConversationSummary>("create_conversation");
+      await refreshConversations();
+      await selectConversation(created.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
 
-      try {
-        await invoke("ask_ai_stream", {
-          prompt: message,
-        });
-      } catch (err) {
-        setError(err as string);
-        setIsLoading(false);
-        console.error("AI request failed:", err);
+  const deleteChat = async () => {
+    try {
+      await invoke("delete_conversation", { conversationId: currentId });
+      let list = await refreshConversations();
+      if (list.length === 0) {
+        await invoke("create_conversation");
+        list = await refreshConversations();
       }
+      await selectConversation(list[0].id);
+    } catch (err) {
+      setError(String(err));
     }
+  };
+
+  const send = async (prompt: string, regenerate: boolean) => {
+    setIsLoading(true);
+    setError("");
+    setResponse("");
+    setRegenerating(regenerate);
+    setPendingUser(regenerate ? "" : prompt);
+    try {
+      await invoke("ask_ai_stream", {
+        conversationId: currentId,
+        prompt,
+        regenerate,
+      });
+    } catch (err) {
+      setError(String(err));
+      setPendingUser("");
+      setRegenerating(false);
+      setIsLoading(false);
+    }
+  };
+
+  const handleSubmit = () => {
+    if (message.trim() && !isLoading) send(message, false);
   };
 
   const handleStop = async () => {
     try {
       await invoke("stop_streaming");
-      setIsLoading(false);
     } catch (err) {
       console.error("Failed to stop streaming:", err);
       setIsLoading(false);
     }
   };
 
-  const copyToClipboard = async (
-    text: string,
-    type: "code" | "full",
-    codeId?: string
-  ) => {
+  const copyToClipboard = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
-
-      if (type === "code" && codeId) {
-        setCopiedStates((prev) => ({ ...prev, [codeId]: true }));
-        setTimeout(() => {
-          setCopiedStates((prev) => ({ ...prev, [codeId]: false }));
-        }, 2000);
-      } else if (type === "full") {
-        setFullResponseCopied(true);
-        setTimeout(() => setFullResponseCopied(false), 2000);
-      }
+      setCopiedStates((prev) => ({ ...prev, [key]: true }));
+      setTimeout(() => setCopiedStates((prev) => ({ ...prev, [key]: false })), 2000);
     } catch (err) {
       console.error("Failed to copy text:", err);
     }
   };
 
-  // Custom components for ReactMarkdown
   const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
     const match = /language-(\w+)/.exec(className || "");
-    const language = match ? match[1] : "";
     const codeText = String(children).replace(/\n$/, "");
-    // Use a hash of the content as a stable ID
     const codeId = `code-${codeText.slice(0, 20).replace(/\s/g, "")}`;
-    const isCopied = copiedStates[codeId];
 
     if (!inline && match) {
       return (
@@ -192,54 +232,78 @@ function App() {
             size="sm"
             variant="ghost"
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={() => copyToClipboard(codeText, "code", codeId)}
+            onClick={() => copyToClipboard(codeText, codeId)}
           >
-            {isCopied ? (
-              <Check className="h-4 w-4" />
-            ) : (
-              <Copy className="h-4 w-4" />
-            )}
+            {copiedStates[codeId] ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
           </Button>
         </div>
       );
     }
 
     return (
-      <code
-        className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-sm"
-        {...props}
-      >
+      <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-sm" {...props}>
         {children}
       </code>
     );
   };
 
+  const markdown = (text: string) => (
+    <div className="text-sm leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+      <ReactMarkdown components={{ code: CodeBlock }}>{text}</ReactMarkdown>
+    </div>
+  );
+
   if (showSettings) {
     return (
       <SettingsPage
         onBack={() => setShowSettings(false)}
-        onChanged={(view) => {
-          const active = view.providers.find((p) => p.id === view.active);
-          setActiveLabel(active ? `${active.name} · ${active.model || "no model"}` : "");
-        }}
+        onChanged={(view) => setActiveLabel(activeLabelFor(view))}
       />
     );
   }
+
+  // While regenerating, the answer being replaced is hidden.
+  const lastMessage = messages[messages.length - 1];
+  const shownMessages =
+    regenerating && lastMessage?.role === "assistant" ? messages.slice(0, -1) : messages;
+  const lastAssistantId = lastMessage?.role === "assistant" ? lastMessage.id : null;
 
   return (
     <div className="w-full flex flex-col h-screen p-4">
       <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
         {/* Header with controls */}
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold">Ghost Query</h1>
-            {conversationHistory.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {conversationHistory.length} messages
-              </span>
-            )}
+        <div className="flex justify-between items-center mb-4 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="text-lg font-semibold shrink-0">Ghost Query</h1>
+            <select
+              className="min-w-0 max-w-xs rounded-lg border border-input bg-background px-2 py-1 text-sm"
+              value={currentId}
+              disabled={isLoading}
+              onChange={(e) => selectConversation(e.target.value)}
+              title="Conversations"
+            >
+              {conversations.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
+            <Button variant="outline" size="sm" onClick={newChat} disabled={isLoading}>
+              <Plus className="h-4 w-4 mr-1" />
+              New chat
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={deleteChat}
+              disabled={isLoading || messages.length === 0}
+              title="Delete this conversation"
+            >
+              <Trash2 className="h-4 w-4 mr-1" />
+              Delete
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -249,101 +313,70 @@ function App() {
               <Settings className="h-4 w-4 mr-1" />
               {activeLabel || "Settings"}
             </Button>
-            {conversationHistory.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowHistory(!showHistory)}
-              >
-                <MessageSquare className="h-4 w-4 mr-1" />
-                {showHistory ? "Hide" : "Show"} History
-              </Button>
-            )}
-            {conversationHistory.length > 0 && (
-              <Button variant="outline" size="sm" onClick={clearConversation}>
-                <Trash2 className="h-4 w-4 mr-1" />
-                Clear
-              </Button>
-            )}
           </div>
         </div>
 
-        {/* Conversation History */}
-        {showHistory && conversationHistory.length > 0 && (
-          <div className="mb-4 max-h-[30vh] overflow-y-auto border rounded-lg p-4 bg-muted/30">
-            <h3 className="text-sm font-medium mb-2">Conversation History</h3>
-            <div className="space-y-2">
-              {conversationHistory.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`text-xs p-2 rounded relative group ${
-                    msg.role === "user"
-                      ? "bg-blue-100 dark:bg-blue-900/20 ml-4"
-                      : "bg-green-100 dark:bg-green-900/20 mr-4"
-                  }`}
-                >
-                  <div className="font-medium text-xs mb-1 flex justify-between items-center">
-                    <span>{msg.role === "user" ? "You" : "AI"}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                      onClick={() =>
-                        copyToClipboard(msg.content, "full")
-                      }
-                    >
-                      <Copy className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  <div className="whitespace-pre-wrap">
-                    {msg.content.length > 200
-                      ? `${msg.content.substring(0, 200)}...`
-                      : msg.content}
-                  </div>
+        {/* Message thread */}
+        <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto mb-4 space-y-3">
+          {shownMessages.map((msg) =>
+            msg.role === "user" ? (
+              <div key={msg.id} className="flex justify-end">
+                <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+                  {msg.content}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Response Area - Scrollable */}
-        {(response || isLoading) && (
-          <div
-            ref={responseRef}
-            className="flex-1 mb-4 p-4 rounded-lg bg-muted/50 border overflow-y-auto max-h-[60vh] relative"
-          >
-            <div className="text-sm leading-relaxed prose prose-sm max-w-none dark:prose-invert">
-              <ReactMarkdown
-                components={{
-                  code: CodeBlock,
-                }}
-              >
-                {response}
-              </ReactMarkdown>
-              {isLoading && !response && (
-                <span className="text-muted-foreground">Thinking...</span>
-              )}
-              {/* Copy Full Response Button - positioned at end of content */}
-              {response && (
-                <div className="mt-8 flex justify-start">
+              </div>
+            ) : (
+              <div key={msg.id} className="rounded-lg bg-muted/50 border p-4 group">
+                {markdown(msg.content)}
+                <div className="mt-2 flex items-center gap-1">
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() =>
-                      copyToClipboard(response, "full")
-                    }
+                    onClick={() => copyToClipboard(msg.content, `msg-${msg.id}`)}
+                    title="Copy"
                   >
-                    {fullResponseCopied ? (
+                    {copiedStates[`msg-${msg.id}`] ? (
                       <Check className="h-4 w-4" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
                   </Button>
+                  {msg.id === lastAssistantId && !isLoading && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => send("", true)}
+                      title="Regenerate"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  )}
+                  {msg.status === "cancelled" && (
+                    <span className="text-xs text-muted-foreground">(stopped)</span>
+                  )}
                 </div>
+              </div>
+            )
+          )}
+
+          {pendingUser && (
+            <div className="flex justify-end">
+              <div className="max-w-[85%] rounded-lg bg-blue-100 dark:bg-blue-900/20 px-3 py-2 text-sm whitespace-pre-wrap">
+                {pendingUser}
+              </div>
+            </div>
+          )}
+
+          {isLoading && (
+            <div className="rounded-lg bg-muted/50 border p-4">
+              {response ? (
+                markdown(response)
+              ) : (
+                <span className="text-sm text-muted-foreground">Thinking...</span>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Error Display */}
         {error && (
@@ -361,10 +394,7 @@ function App() {
             loading={isLoading}
             onStop={handleStop}
           >
-            <ChatInputTextArea
-              ref={inputRef}
-              placeholder="Type your question here"
-            />
+            <ChatInputTextArea ref={inputRef} placeholder="Type your question here" />
             <ChatInputSubmit />
           </ChatInput>
         </div>

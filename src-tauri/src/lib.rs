@@ -1,11 +1,13 @@
 mod conversation;
+mod db;
 mod keystore;
 mod provider;
 mod providers;
 mod settings;
 mod sse;
 
-use conversation::{ChatMessage, Conversation, ConversationMessage};
+use conversation::{build_request_messages, HISTORY_TOKEN_BUDGET};
+use db::{ConversationSummary, Db, StoredMessage};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager,
@@ -23,13 +25,18 @@ use tokio_util::sync::CancellationToken;
 const SYSTEM_PROMPT: &str = "You are Ghost Query, a concise assistant. Answer directly. \
 Use Markdown for structure and fenced code blocks for code.";
 
-#[derive(Default)]
 struct ChatState {
-    conversation: Mutex<Conversation>,
+    db: Db,
     /// Token of the in-flight request, tagged with its id so a finished request
     /// never clears the token of a newer one.
     active: Mutex<Option<(u64, CancellationToken)>>,
     next_id: AtomicU64,
+}
+
+impl ChatState {
+    fn new(db: Db) -> Self {
+        Self { db, active: Mutex::new(None), next_id: AtomicU64::new(0) }
+    }
 }
 
 #[derive(Serialize)]
@@ -132,7 +139,41 @@ async fn list_models(app: AppHandle, id: String, base_url: String) -> Result<Vec
 }
 
 #[tauri::command]
-async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatState>) -> Result<(), String> {
+fn list_conversations(state: State<'_, ChatState>) -> Result<Vec<ConversationSummary>, String> {
+    state.db.list_conversations()
+}
+
+#[tauri::command]
+fn create_conversation(state: State<'_, ChatState>) -> Result<ConversationSummary, String> {
+    state.db.create_conversation()
+}
+
+#[tauri::command]
+fn rename_conversation(state: State<'_, ChatState>, conversation_id: String, title: String) -> Result<(), String> {
+    state.db.rename_conversation(&conversation_id, &title)
+}
+
+#[tauri::command]
+fn delete_conversation(state: State<'_, ChatState>, conversation_id: String) -> Result<(), String> {
+    state.db.delete_conversation(&conversation_id)
+}
+
+#[tauri::command]
+fn get_messages(state: State<'_, ChatState>, conversation_id: String) -> Result<Vec<StoredMessage>, String> {
+    state.db.messages(&conversation_id)
+}
+
+/// Sends `prompt` in a conversation (or, with `regenerate`, re-asks its last user
+/// message). Nothing is written until the reply finishes or is stopped, so a failed
+/// request leaves the conversation exactly as it was.
+#[tauri::command]
+async fn ask_ai_stream(
+    conversation_id: String,
+    prompt: String,
+    regenerate: bool,
+    app: AppHandle,
+    state: State<'_, ChatState>,
+) -> Result<(), String> {
     let active = match Settings::load(&settings_path(&app)?).active() {
         Ok(active) => active,
         Err(message) => {
@@ -149,9 +190,16 @@ async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatStat
         return Ok(());
     }
 
-    // History is only read here; it is written once the exchange has finished.
-    let mut messages = vec![ChatMessage { role: "system".into(), content: SYSTEM_PROMPT.into() }];
-    messages.extend(state.conversation.lock().unwrap().history_for_request(&prompt));
+    let (prompt, history) = if regenerate {
+        let Some(last) = state.db.last_user_message(&conversation_id)? else {
+            let _ = app.emit("ai-response-error", "Nothing to regenerate.");
+            return Ok(());
+        };
+        (last, state.db.history(&conversation_id, true)?)
+    } else {
+        (prompt, state.db.history(&conversation_id, false)?)
+    };
+    let messages = build_request_messages(SYSTEM_PROMPT, history, &prompt, HISTORY_TOKEN_BUDGET);
 
     let token = CancellationToken::new();
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
@@ -162,36 +210,41 @@ async fn ask_ai_stream(prompt: String, app: AppHandle, state: State<'_, ChatStat
     let outcome = provider::stream_chat(&Client::new(), &active, key.as_deref(), &messages, &token, &app).await;
 
     {
-        let mut active = state.active.lock().unwrap();
-        if matches!(&*active, Some((current, _)) if *current == id) {
-            *active = None;
+        let mut slot = state.active.lock().unwrap();
+        if matches!(&*slot, Some((current, _)) if *current == id) {
+            *slot = None;
         }
     }
 
+    let save = |text: &str, status: &str| state.db.commit_exchange(&conversation_id, &prompt, text, status, regenerate);
     match outcome {
-        Outcome::Done(full) => {
-            state.conversation.lock().unwrap().commit_exchange(&prompt, &full);
-            let _ = app.emit("ai-response-done", &full);
+        Outcome::Done(full) if full.trim().is_empty() => {
+            let _ = app.emit("ai-response-error", "The model returned an empty reply.");
         }
-        Outcome::Cancelled(partial) => {
-            state.conversation.lock().unwrap().commit_exchange(&prompt, &partial);
-            let _ = app.emit("ai-response-cancelled", &partial);
+        Outcome::Done(full) => match save(&full, "complete") {
+            Ok(()) => {
+                let _ = app.emit("ai-response-done", &full);
+            }
+            Err(e) => {
+                let _ = app.emit("ai-response-error", e);
+            }
+        },
+        // Stopped before any text arrived: nothing worth saving, the prompt stays in the input box.
+        Outcome::Cancelled(partial) if partial.is_empty() => {
+            let _ = app.emit("ai-response-cancelled", "");
         }
+        Outcome::Cancelled(partial) => match save(&partial, "cancelled") {
+            Ok(()) => {
+                let _ = app.emit("ai-response-cancelled", &partial);
+            }
+            Err(e) => {
+                let _ = app.emit("ai-response-error", e);
+            }
+        },
         Outcome::Failed(message) => {
             let _ = app.emit("ai-response-error", &message);
         }
     }
-    Ok(())
-}
-
-#[tauri::command]
-fn get_conversation_history(state: State<'_, ChatState>) -> Result<Vec<ConversationMessage>, String> {
-    Ok(state.conversation.lock().unwrap().messages())
-}
-
-#[tauri::command]
-fn clear_conversation(state: State<'_, ChatState>) -> Result<(), String> {
-    state.conversation.lock().unwrap().clear();
     Ok(())
 }
 
@@ -212,11 +265,13 @@ pub fn run() {
     manager.register(hotkey).unwrap();
 
     tauri::Builder::default()
-        .manage(ChatState::default())
         .invoke_handler(tauri::generate_handler![
             ask_ai_stream,
-            get_conversation_history,
-            clear_conversation,
+            list_conversations,
+            create_conversation,
+            rename_conversation,
+            delete_conversation,
+            get_messages,
             stop_streaming,
             get_settings,
             save_provider,
@@ -231,6 +286,9 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(ChatState::new(Db::open(&data_dir.join("ghost-query.db"))?));
 
             let window = app.get_webview_window("main").unwrap();
             window.hide().unwrap();
