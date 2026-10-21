@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown, Search } from "lucide-react";
 import type { ProviderView, SettingsView } from "./settings-sheet";
+import { moveFocus } from "../lib/utils";
 
 interface ModelInfo {
   id: string;
@@ -107,6 +108,7 @@ export function ModelPicker({ view, open, onOpenChange, onPicked, onManage, onEr
           align="start"
           sideOffset={8}
           collisionPadding={8}
+          onKeyDown={moveFocus}
           onOpenAutoFocus={(e) => {
             e.preventDefault();
             searchRef.current?.focus();
@@ -148,6 +150,7 @@ export function ModelPicker({ view, open, onOpenChange, onPicked, onManage, onEr
                     <button
                       key={m.id}
                       type="button"
+                      data-item
                       onClick={() => pick(p, m.id)}
                       aria-current={selected ? "true" : undefined}
                       className="flex w-full items-center gap-2 rounded-[7px] px-2 py-1.5 text-left text-[13px] outline-none hover:bg-muted focus-visible:bg-muted"
@@ -165,6 +168,7 @@ export function ModelPicker({ view, open, onOpenChange, onPicked, onManage, onEr
             {q && !exact && active && usable(active) && (
               <button
                 type="button"
+                data-item
                 onClick={() => pick(active, query.trim())}
                 className="flex w-full items-center rounded-[7px] px-2 py-1.5 text-left text-[13px] outline-none hover:bg-muted focus-visible:bg-muted"
               >

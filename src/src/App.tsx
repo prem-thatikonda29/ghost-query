@@ -3,7 +3,7 @@ import { ChatInput, ChatInputTextArea } from "./components/ui/chat-input";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SettingsSheet, SettingsView } from "./components/settings-sheet";
-import { ArrowUp, Check, Copy, Minimize2, Plus, RefreshCw, Settings2, Square } from "lucide-react";
+import { ArrowUp, Check, Copy, Ghost, Minimize2, Plus, RefreshCw, Settings2, Square, X } from "lucide-react";
 import { Markdown } from "./components/markdown";
 import { Bar } from "./components/bar";
 import { ChatSwitcher, ConversationSummary } from "./components/chat-switcher";
@@ -50,6 +50,13 @@ function App() {
   const modeRef = useRef<WindowMode>("bar");
   const currentIdRef = useRef("");
   const threadRef = useRef<HTMLDivElement>(null);
+  // Whether the thread follows new text; off while the user has scrolled up to read.
+  const followRef = useRef(true);
+  // The prompt being answered, cleared from the composer on send and put back if
+  // the request fails before anything is saved.
+  const inFlightPrompt = useRef("");
+  // Read out by screen readers, which are not sent every streamed chunk.
+  const [announcement, setAnnouncement] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const barRef = useRef<HTMLInputElement>(null);
 
@@ -96,6 +103,7 @@ function App() {
 
   const selectConversation = async (id: string) => {
     currentIdRef.current = id;
+    followRef.current = true;
     setCurrentId(id);
     setResponse("");
     setPendingUser("");
@@ -116,15 +124,17 @@ function App() {
     });
 
     const unlistenDone = listen<string>("ai-response-done", async () => {
+      inFlightPrompt.current = "";
       await refresh();
       setResponse("");
       setPendingUser("");
       setRegenerating(false);
       setIsLoading(false);
-      setMessage("");
+      setAnnouncement("Reply finished");
     });
 
     const unlistenError = listen<string>("ai-response-error", (event) => {
+      restorePrompt();
       setError(event.payload);
       setResponse("");
       setPendingUser("");
@@ -133,8 +143,11 @@ function App() {
     });
 
     const unlistenCancelled = listen<string>("ai-response-cancelled", async (event) => {
-      // A stopped reply with text is saved; the prompt then leaves the input box.
-      if (event.payload) setMessage("");
+      // A stopped reply with text is saved with its prompt; stopped before any text,
+      // nothing is saved and the prompt goes back into the composer.
+      if (event.payload) inFlightPrompt.current = "";
+      else restorePrompt();
+      setAnnouncement("Reply stopped");
       await refresh();
       setResponse("");
       setPendingUser("");
@@ -236,10 +249,23 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (threadRef.current) {
+    if (threadRef.current && followRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
-  }, [messages, response, pendingUser]);
+  }, [messages, response, pendingUser, error]);
+
+  const onThreadScroll = () => {
+    const el = threadRef.current;
+    if (el) followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+
+  // Called from the stream listeners (registered once), so it only uses setters and
+  // refs. Anything typed meanwhile is kept rather than overwritten.
+  const restorePrompt = () => {
+    const prompt = inFlightPrompt.current;
+    inFlightPrompt.current = "";
+    if (prompt) setMessage((typed) => typed || prompt);
+  };
 
   // An empty current chat is reused rather than piling up untitled ones.
   const newChat = async () => {
@@ -276,6 +302,12 @@ function App() {
     setResponse("");
     setRegenerating(regenerate);
     setPendingUser(regenerate ? "" : prompt);
+    setAnnouncement("");
+    followRef.current = true;
+    if (!regenerate) {
+      inFlightPrompt.current = prompt;
+      setMessage("");
+    }
     try {
       await invoke("ask_ai_stream", {
         conversationId: currentIdRef.current,
@@ -283,6 +315,7 @@ function App() {
         regenerate,
       });
     } catch (err) {
+      restorePrompt();
       setError(String(err));
       setPendingUser("");
       setRegenerating(false);
@@ -357,6 +390,7 @@ function App() {
     regenerating && lastMessage?.role === "assistant" ? messages.slice(0, -1) : messages;
   const lastAssistantId = lastMessage?.role === "assistant" ? lastMessage.id : null;
   const canSend = message.trim().length > 0;
+  const isEmpty = shownMessages.length === 0 && !pendingUser && !isLoading && !error && startupNotices.length === 0;
 
   return (
     <div className={`${shell} flex flex-col`}>
@@ -390,8 +424,21 @@ function App() {
         </div>
 
         {/* Thread */}
-        <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5 px-5 py-6">
+        <div
+          ref={threadRef}
+          onScroll={onThreadScroll}
+          aria-label="Conversation"
+          aria-busy={isLoading}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto flex min-h-full w-full max-w-[640px] flex-col gap-5 px-5 py-6">
+            {isEmpty && (
+              <div className="m-auto flex flex-col items-center gap-2 text-muted-foreground">
+                <Ghost aria-hidden="true" className="h-6 w-6 opacity-60" />
+                <p className="text-[13px]">Ask anything</p>
+              </div>
+            )}
+
             {startupNotices.map((notice) => (
               <div key={notice} role="status" className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
                 {notice}
@@ -431,7 +478,9 @@ function App() {
                       </IconButton>
                     )}
                     {msg.status === "cancelled" && (
-                      <span className="ml-1 text-xs text-muted-foreground">(incomplete)</span>
+                      <span className="ml-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        Incomplete
+                      </span>
                     )}
                   </div>
                 </div>
@@ -452,11 +501,33 @@ function App() {
               ))}
 
             {error && (
-              <div role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
-                {error}
+              <div
+                role="alert"
+                className="flex items-start gap-3 rounded-lg bg-destructive/10 py-2 pl-3 pr-1.5 text-[13px] text-destructive"
+              >
+                <p className="min-w-0 flex-1 py-0.5">{error}</p>
+                {/settings/i.test(error) && (
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="shrink-0 rounded py-0.5 font-medium underline-offset-2 outline-none hover:underline focus-visible:underline"
+                  >
+                    Open Settings
+                  </button>
+                )}
+                <IconButton
+                  label="Dismiss"
+                  className="h-6 w-6 text-destructive hover:bg-destructive/10 hover:text-destructive [&_svg]:h-3.5 [&_svg]:w-3.5"
+                  onClick={() => setError("")}
+                >
+                  <X />
+                </IconButton>
               </div>
             )}
           </div>
+        </div>
+        <div aria-live="polite" className="sr-only">
+          {announcement}
         </div>
 
         {/* Composer */}

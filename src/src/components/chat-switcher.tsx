@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Check, ChevronDown, Trash2 } from "lucide-react";
 import { IconButton } from "./ui/icon-button";
+import { moveFocus } from "../lib/utils";
 
 export interface ConversationSummary {
   id: string;
@@ -52,6 +53,7 @@ export function ChatSwitcher({ conversations, currentId, disabled, onSelect, onD
           align="start"
           sideOffset={6}
           collisionPadding={8}
+          onKeyDown={moveFocus}
           className="z-40 w-80 rounded-[10px] border border-border bg-popover p-1 text-popover-foreground shadow-xl outline-none"
         >
           <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">Recent chats</div>
@@ -60,6 +62,7 @@ export function ChatSwitcher({ conversations, currentId, disabled, onSelect, onD
               <li key={c.id} className="group flex items-center rounded-[7px] hover:bg-muted">
                 <button
                   type="button"
+                  data-item
                   aria-current={c.id === currentId ? "true" : undefined}
                   onClick={() => {
                     setOpen(false);
