@@ -6,7 +6,8 @@
   "build": {
     "frontendDist": "../src/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../src run dev"
+    "beforeDevCommand": "npm --prefix ../src run dev",
+    "beforeBuildCommand": "npm --prefix ../src run build"
   },
   "app": {
     "windows": [
@@ -16,12 +17,19 @@
         "resizable": true,
         "title": "Ghost Query",
         "width": 800,
-        "decorations": true,
-        "transparent": false
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visibleOnAllWorkspaces": true,
+        "contentProtected": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost",
+      "devCsp": "default-src 'self' http://localhost:5173 ws://localhost:5173; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; img-src 'self' data: http://localhost:5173; font-src 'self' data: http://localhost:5173; connect-src ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173"
     }
   },
   "bundle": {

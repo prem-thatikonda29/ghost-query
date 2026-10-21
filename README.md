@@ -1,21 +1,21 @@
 # Ghost Query
 
-A Tauri desktop app for chatting with Gemini and Perplexity — streaming responses, model selection, and conversation history.
+A Tauri desktop app for chatting with any OpenAI-compatible model provider (OpenRouter by default) — streaming responses, a global hotkey, and conversation history. No server: the app talks to the provider directly and keeps your API key in the OS keychain.
 
 ## Features
 
-- **Multi-model support** — Switch between Gemini and Perplexity models on the fly.
-- **Streaming responses** — Real-time token-by-token output as the AI thinks.
-- **Conversation history** — Browse, copy, or clear past conversations.
-- **Markdown rendering** — Responses render with syntax-highlighted code blocks and copy buttons.
-- **Proxy server** — API keys stay server-side with rate limiting per IP.
+- **Bring your own key, any provider** — A separate Settings page lets you pick OpenRouter (including free `:free` models), OpenAI, Claude (Anthropic), Google Gemini, Groq, NVIDIA NIM, Mistral, Together AI, DeepSeek or local Ollama; the base URL is set for you. Choose "Custom" to enter your own base URL and key for any other OpenAI-compatible endpoint (AgentRouter, a self-hosted gateway, ...). Each provider keeps its own key and model.
+- **Keys stay in the keychain** — One entry per provider in the macOS Keychain / Windows Credential Manager. The UI can save or remove a key but never reads it back, and the app never writes it to disk.
+- **Streaming responses** — Real-time token-by-token output, with a Stop button that cancels the request.
+- **Ghost window** — Frameless, always-on-top, no Dock icon or taskbar entry. Ctrl+Shift+Space shows or hides it, Esc hides it, Ctrl/Cmd+Q quits. By default it asks the OS to exclude the window from screenshots and screen sharing (toggle in Settings; not guaranteed on every capture method).
+- **Persistent conversations** — Chats are saved in a local SQLite database, with a conversation switcher, New chat, Delete and Regenerate. Long chats are trimmed to a token budget when sent.
+- **Markdown rendering** — Syntax-highlighted code blocks with copy buttons.
 
 ## Tech Stack
 
 - **Desktop:** Tauri 2 (Rust + React)
 - **Frontend:** React, Tailwind CSS, Framer Motion, React Markdown
-- **Backend proxy:** Node.js, Express, Helmet, rate limiting
-- **APIs:** Google Gemini, Perplexity
+- **Backend:** Rust (`reqwest` streaming, `keyring`)
 
 ## Project Structure
 
@@ -23,14 +23,23 @@ A Tauri desktop app for chatting with Gemini and Perplexity — streaming respon
 ├── src/                  # React frontend (Vite)
 │   └── src/
 │       ├── App.tsx       # Main chat UI
-│       ├── components/   # UI primitives (chat input, model selector, etc.)
-│       ├── hooks/        # Custom React hooks
+│       ├── components/   # UI primitives (chat input, settings page, etc.)
 │       └── lib/          # Utilities
-├── src-tauri/            # Tauri/Rust backend
+├── src-tauri/            # Tauri app shell
 │   └── src/
-│       └── lib.rs        # Tauri entry point
-├── proxy-server/         # Express proxy for API keys + rate limiting
-│   └── api/              # Serverless functions
+│       ├── lib.rs        # App setup, commands, global shortcut
+│       └── window.rs     # Show/hide the window
+├── ghost-core/           # Logic with no Tauri dependency (all unit tests live here)
+│   └── src/
+│       ├── provider.rs   # OpenAI-compatible streaming client
+│       ├── providers.rs  # Built-in provider presets
+│       ├── keystore.rs   # Per-provider API keys in the OS keychain
+│       ├── settings.rs   # Active provider, models, custom URL (non-secret)
+│       ├── conversation.rs  # Request building, token-budget trimming
+│       ├── db.rs         # SQLite conversations and messages
+│       ├── debounce.rs   # Hotkey debounce
+│       └── sse.rs        # Server-sent-events parser
+├── PLAN.md               # Phase checklist
 └── Cargo.toml            # Rust workspace
 ```
 
@@ -38,48 +47,38 @@ A Tauri desktop app for chatting with Gemini and Perplexity — streaming respon
 
 - [Rust](https://rustup.rs/) (1.77.2+)
 - Node.js 18+
-- API keys for Gemini and Perplexity
+- An [OpenRouter](https://openrouter.ai) API key (free to create). Free models are limited to 20 requests/minute and 50/day (1000/day after buying 10+ credits).
 
 ## Getting Started
-
-### 1. Set up the proxy server
-
-```sh
-cd proxy-server
-npm install
-cp env.example .env   # Add your GEMINI_API_KEY and PERPLEXITY_API_KEY
-npm run dev
-```
-
-### 2. Run the desktop app
 
 ```sh
 # From the project root
 npm --prefix src install
-cargo tauri dev
+npm --prefix src run tauri dev
 ```
 
-The Vite dev server starts on `localhost:5173` and Tauri loads it in a native window.
+On first launch the Settings page opens: pick a provider, paste its API key, choose a model (OpenRouter defaults to `google/gemma-4-31b-it:free`), and press "Save and use". Use "Back to chat" to return.
 
-## Proxy Server
+## Tests
 
-The Express proxy (`proxy-server/`) keeps API keys server-side and enforces rate limits:
+```sh
+cargo test -p ghost-core
+```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/gemini` | POST | Chat with Gemini models |
-| `/api/perplexity` | POST | Chat with Perplexity models |
-| `/health` | GET | Health check |
-| `/api/models` | GET | List available models |
+CI (`.github/workflows/ci.yml`) runs the frontend build, these tests and a compile check of the app on macOS and Windows for every push to `main`/`v2-dev` and every pull request.
 
-Rate limits: 100 req/15min general, 50 req/15min Gemini, 30 req/15min Perplexity.
+## Releases
 
-## Environment Variables
+Bump `version` in `src-tauri/tauri.conf.json`, commit, then push a matching tag:
 
-| Variable | Description |
-|---|---|
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `PERPLEXITY_API_KEY` | Perplexity API key |
+```sh
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+`.github/workflows/release.yml` builds a universal macOS `.dmg` and Windows installers (`.msi` and `-setup.exe`) and attaches them to a **draft** GitHub release for you to review and publish. The build fails if the tag doesn't match the app version.
+
+Builds are not code-signed, so macOS shows a Gatekeeper warning on first launch (right-click the app and choose Open) and Windows shows a SmartScreen warning.
 
 ## License
 

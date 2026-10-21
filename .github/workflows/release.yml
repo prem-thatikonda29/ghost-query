@@ -1,0 +1,97 @@
+name: Release
+
+# Push a tag like v0.3.0 (it must match "version" in src-tauri/tauri.conf.json) to build
+# installers for macOS (universal) and Windows and attach them to a draft GitHub release.
+# Builds are unsigned: macOS shows a Gatekeeper warning and Windows shows SmartScreen.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+            bundle_dir: target/universal-apple-darwin/release/bundle
+            artifact: macos
+          - os: windows-latest
+            args: ""
+            bundle_dir: target/release/bundle
+            artifact: windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match the app version
+        run: |
+          version="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match tauri.conf.json version $version" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: npm --prefix src ci
+
+      # beforeBuildCommand in tauri.conf.json builds the frontend.
+      - name: Build installers
+        run: npm --prefix src exec -- tauri build ${{ matrix.args }}
+
+      - name: Collect installers
+        run: |
+          mkdir -p dist-release
+          find "${{ matrix.bundle_dir }}" -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \) -exec cp {} dist-release/ \;
+          ls -la dist-release
+          test -n "$(ls -A dist-release)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.artifact }}
+          path: dist-release/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: installers
+          pattern: installers-*
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -la installers
+          gh release create "$GITHUB_REF_NAME" installers/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Ghost Query $GITHUB_REF_NAME" \
+            --generate-notes \
+            --draft
