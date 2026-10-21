@@ -5,7 +5,8 @@ use ghost_core::db::{ConversationSummary, Db, StoredMessage};
 use ghost_core::debounce::Debounce;
 use ghost_core::provider::{ModelInfo, Outcome};
 use ghost_core::settings::Settings;
-use ghost_core::{keystore, provider, providers};
+use ghost_core::keystore::KeyStore;
+use ghost_core::{provider, providers};
 use reqwest::Client;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -22,6 +23,9 @@ struct ChatState {
     db: Db,
     /// One client for all requests, so connections and TLS sessions are reused.
     client: Client,
+    /// API keys, read from the OS keychain at most once per launch (each read can make
+    /// macOS ask for the user's password).
+    keys: KeyStore,
     /// Token of the in-flight request, tagged with its id so a finished request
     /// never clears the token of a newer one.
     active: Mutex<Option<(u64, CancellationToken)>>,
@@ -36,7 +40,7 @@ impl ChatState {
             .connect_timeout(std::time::Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { db, client, active: Mutex::new(None), next_id: AtomicU64::new(0) }
+        Self { db, client, keys: KeyStore::new(), active: Mutex::new(None), next_id: AtomicU64::new(0) }
     }
 }
 
@@ -127,6 +131,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsView, String> {
 #[tauri::command]
 fn save_provider(
     app: AppHandle,
+    state: State<'_, ChatState>,
     id: String,
     base_url: String,
     model: String,
@@ -136,7 +141,7 @@ fn save_provider(
     let mut settings = Settings::load(&path);
     settings.update_provider(&id, &base_url, &model)?;
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
-        keystore::set(&id, key)?;
+        state.keys.set(&id, key)?;
         settings.set_has_key(&id, true);
     }
     settings.set_active(&id)?;
@@ -145,10 +150,10 @@ fn save_provider(
 }
 
 #[tauri::command]
-fn remove_api_key(app: AppHandle, id: String) -> Result<SettingsView, String> {
+fn remove_api_key(app: AppHandle, state: State<'_, ChatState>, id: String) -> Result<SettingsView, String> {
     let path = settings_path(&app)?;
     let mut settings = Settings::load(&path);
-    keystore::clear(&id)?;
+    state.keys.clear(&id)?;
     settings.set_has_key(&id, false);
     settings.save(&path)?;
     Ok(settings_view(&settings))
@@ -175,7 +180,7 @@ async fn list_models(
     }
     // The saved key only ever goes to the saved URL: a URL still being typed in the form
     // is queried without credentials. Also avoids touching the keychain needlessly.
-    let key = if config.has_key && url == config.base_url { keystore::get(&id)? } else { None };
+    let key = if config.has_key && url == config.base_url { state.keys.get(&id)? } else { None };
     provider::fetch_models(&state.client, &url, key.as_deref()).await
 }
 
@@ -225,7 +230,7 @@ async fn ask_ai_stream(
             return Ok(());
         }
     };
-    let key = keystore::get(&active.id)?;
+    let key = state.keys.get(&active.id)?;
     if key.is_none() && active.needs_key {
         let _ = app.emit(
             "ai-response-error",
