@@ -1,8 +1,6 @@
 import { forwardRef } from "react";
 import { ArrowUp, Ghost, Maximize2, Square } from "lucide-react";
 import { IconButton } from "./ui/icon-button";
-import { ModelChip } from "./model-picker";
-import type { SettingsView } from "./settings-sheet";
 import { MOD } from "../lib/utils";
 
 interface BarProps {
@@ -10,17 +8,15 @@ interface BarProps {
   onChange: (value: string) => void;
   onSubmit: () => void;
   onExpand: () => void;
-  onModel: () => void;
   loading: boolean;
   onStop: () => void;
   placeholder: string;
-  settings: SettingsView | null;
 }
 
 /// The Spotlight-like state of the window: one line to ask from. The empty parts of
 /// the bar drag the window. Tooltips open sideways, as the bar has no room below.
 export const Bar = forwardRef<HTMLInputElement, BarProps>(function Bar(
-  { value, onChange, onSubmit, onExpand, onModel, loading, onStop, placeholder, settings },
+  { value, onChange, onSubmit, onExpand, loading, onStop, placeholder },
   ref
 ) {
   const empty = value.trim().length === 0;
@@ -42,7 +38,6 @@ export const Bar = forwardRef<HTMLInputElement, BarProps>(function Bar(
         spellCheck={false}
         className="ml-0.5 min-w-0 flex-1 truncate bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <ModelChip view={settings} onClick={onModel} />
       <IconButton label="Open chat" shortcut={`${MOD}↑`} side="left" className="h-8 w-8" onClick={onExpand}>
         <Maximize2 />
       </IconButton>

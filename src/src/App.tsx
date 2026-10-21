@@ -306,11 +306,6 @@ function App() {
     send(message, false);
   };
 
-  // The bar has no room for the list, so its chip opens the panel's picker.
-  const openPickerFromBar = async () => {
-    await expand();
-    setPickerOpen(true);
-  };
 
   const handleStop = async () => {
     try {
@@ -344,10 +339,8 @@ function App() {
           onChange={setMessage}
           onSubmit={submitFromBar}
           onExpand={expand}
-          onModel={openPickerFromBar}
           loading={isLoading}
           onStop={handleStop}
-          settings={settings}
           placeholder={
             continuing && currentTitle
               ? `Follow up on “${currentTitle.length > 40 ? `${currentTitle.slice(0, 39)}…` : currentTitle}”`

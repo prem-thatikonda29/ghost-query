@@ -25,29 +25,12 @@ export function activeProvider(view: SettingsView | null): ProviderView | undefi
 /// Providers that can be used right now: they have a key (or need none) and a URL.
 const usable = (p: ProviderView) => (p.has_key || !p.needs_key) && p.base_url !== "";
 
-interface ModelChipProps {
-  view: SettingsView | null;
-  onClick?: () => void;
-}
-
 const chipClass =
   "flex h-7 max-w-[220px] shrink-0 items-center gap-1 rounded-[7px] bg-muted px-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 data-[state=open]:text-foreground";
 
 function chipLabel(view: SettingsView | null) {
   const active = activeProvider(view);
   return active?.model ? shortModelName(active.model) : "Choose model";
-}
-
-/// The chip on its own, for the bar (which is too small to hold the list; it opens
-/// the panel's picker instead).
-export function ModelChip({ view, onClick }: ModelChipProps) {
-  const label = chipLabel(view);
-  return (
-    <button type="button" aria-label={`Model: ${label}. Change model`} className={chipClass} onClick={onClick}>
-      <span className="truncate">{label}</span>
-      <ChevronDown aria-hidden="true" className="h-3 w-3 shrink-0" />
-    </button>
-  );
 }
 
 interface ModelPickerProps {

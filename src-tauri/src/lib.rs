@@ -81,6 +81,8 @@ struct ProviderView {
     url_editable: bool,
     needs_key: bool,
     has_key: bool,
+    /// Saved at least once, so the UI lists it among the providers in use.
+    configured: bool,
     model: String,
     key_hint: String,
 }
@@ -114,6 +116,7 @@ fn settings_view(settings: &Settings) -> SettingsView {
                     url_editable: p.id == providers::CUSTOM_ID,
                     needs_key: p.needs_key,
                     has_key: config.has_key,
+                    configured: settings.providers.contains_key(p.id),
                     model: config.model,
                     key_hint: p.key_hint.to_string(),
                 }
